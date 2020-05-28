@@ -801,6 +801,9 @@ int sde_connector_update_hbm(struct sde_connector *c_conn)
 			}
 		}
 	}
+
+	dsi_display_set_fod_ui(dsi_display, dim_layer_status);
+
 	pr_debug("dim_layer_status:%d hbm_enabled:%d\n", dim_layer_status, dsi_display->panel->fod_dimlayer_hbm_enabled);
 	return 0;
 }
@@ -837,6 +840,8 @@ int sde_connector_pre_kickoff(struct drm_connector *connector)
 	params.hdr_meta = &c_state->hdr_meta;
 
 	SDE_EVT32_VERBOSE(connector->base.id);
+
+	sde_connector_update_hbm(c_conn);
 
 	rc = c_conn->ops.pre_kickoff(connector, c_conn->display, &params);
 

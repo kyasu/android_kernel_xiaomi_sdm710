@@ -72,6 +72,8 @@ EXPORT_SYMBOL(get_primary_display);
 static struct dsi_display *primary_display;
 static struct dsi_display *secondary_display;
 
+static struct kernfs_node *dsi_link;
+
 int dsi_display_write_panel(struct dsi_panel *panel,
 				struct dsi_panel_cmd_set *cmd_sets);
 
@@ -4926,10 +4928,60 @@ static struct attribute_group dynamic_dsi_clock_fs_attrs_group = {
 	.attrs = dynamic_dsi_clock_fs_attrs,
 };
 
+static ssize_t sysfs_fod_ui_read(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct dsi_display *display;
+	bool status;
+
+	display = dev_get_drvdata(dev);
+	if (!display) {
+		pr_err("Invalid display\n");
+		return -EINVAL;
+	}
+
+	status = atomic_read(&display->fod_ui);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", status);
+}
+
+static DEVICE_ATTR(fod_ui, 0444,
+			sysfs_fod_ui_read,
+			NULL);
+
+static struct attribute *display_fs_attrs[] = {
+	&dev_attr_fod_ui.attr,
+	NULL,
+};
+static struct attribute_group display_fs_attrs_group = {
+	.attrs = display_fs_attrs,
+};
+
 static int dsi_display_sysfs_init(struct dsi_display *display)
 {
 	int rc = 0;
 	struct device *dev = &display->pdev->dev;
+	struct device *soc_dev = dev->parent;
+
+	if (!soc_dev)
+		pr_err("[%s] unable to determine parent device\n", display->name);
+	else {
+		struct kobject *dsi_kobj = &dev->kobj;
+		struct kernfs_node *dsi_node = dsi_kobj->sd;
+
+		kernfs_get(dsi_node);
+
+		dsi_link = kernfs_create_link(soc_dev->kobj.sd, "soc:qcom,dsi-display-primary",
+					      dsi_node);
+		if (IS_ERR_OR_NULL(dsi_link))
+			pr_err("[%s] unable to create dsi-display symlink\n", display->name);
+
+		kernfs_put(dsi_node);
+	}
+
+	rc = sysfs_create_group(&dev->kobj, &display_fs_attrs_group);
+	if (rc)
+		pr_err("failed to create display device attributes");
 
 	if (display->panel->panel_mode == DSI_OP_CMD_MODE)
 		rc = sysfs_create_group(&dev->kobj,
@@ -4948,8 +5000,20 @@ static int dsi_display_sysfs_deinit(struct dsi_display *display)
 		sysfs_remove_group(&dev->kobj,
 			&dynamic_dsi_clock_fs_attrs_group);
 
+	sysfs_remove_group(&dev->kobj, &display_fs_attrs_group);
+
+	if (!IS_ERR_OR_NULL(dsi_link))
+		kernfs_remove_by_name(dsi_link->parent, dsi_link->name);
+
 	return 0;
 
+}
+
+void dsi_display_set_fod_ui(struct dsi_display *display, bool status)
+{
+	struct device *dev = &display->pdev->dev;
+	atomic_set(&display->fod_ui, status);
+	sysfs_notify(&dev->kobj, NULL, "fod_ui");
 }
 
 /**
@@ -5223,6 +5287,7 @@ static void dsi_display_unbind(struct device *dev,
 	}
 
 	atomic_set(&display->clkrate_change_pending, 0);
+	atomic_set(&display->fod_ui, false);
 	(void)dsi_display_sysfs_deinit(display);
 	(void)dsi_display_debugfs_deinit(display);
 
