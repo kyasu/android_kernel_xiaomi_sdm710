@@ -21,6 +21,7 @@
 #include <linux/of_gpio.h>
 #include <linux/err.h>
 #include <drm/drm_notifier.h>
+#include <linux/kernfs.h>
 
 #include "msm_drv.h"
 #include "sde_connector.h"
@@ -71,6 +72,8 @@ EXPORT_SYMBOL(get_primary_display);
 
 static struct dsi_display *primary_display;
 static struct dsi_display *secondary_display;
+
+static struct kernfs_node *dsi_link;
 
 int dsi_display_write_panel(struct dsi_panel *panel,
 				struct dsi_panel_cmd_set *cmd_sets);
@@ -4960,6 +4963,23 @@ static int dsi_display_sysfs_init(struct dsi_display *display)
 {
 	int rc = 0;
 	struct device *dev = &display->pdev->dev;
+	struct device *soc_dev = dev->parent;
+
+	if (!soc_dev)
+		pr_err("[%s] unable to determine parent device\n", display->name);
+	else {
+		struct kobject *dsi_kobj = &dev->kobj;
+		struct kernfs_node *dsi_node = dsi_kobj->sd;
+
+		kernfs_get(dsi_node);
+
+		dsi_link = kernfs_create_link(soc_dev->kobj.sd, "soc:qcom,dsi-display-primary",
+					      dsi_node);
+		if (IS_ERR_OR_NULL(dsi_link))
+			pr_err("[%s] unable to create dsi-display symlink\n", display->name);
+
+		kernfs_put(dsi_node);
+	}
 
 	if (display->panel->panel_mode == DSI_OP_CMD_MODE)
 		rc = sysfs_create_group(&dev->kobj,
@@ -4985,6 +5005,9 @@ static int dsi_display_sysfs_deinit(struct dsi_display *display)
 
 	sysfs_remove_group(&dev->kobj,
 		&display_fs_attrs_group);
+
+	if (!IS_ERR_OR_NULL(dsi_link))
+		kernfs_remove_by_name(dsi_link->parent, dsi_link->name);
 
 	return 0;
 
