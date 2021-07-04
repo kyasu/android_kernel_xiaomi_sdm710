@@ -389,7 +389,7 @@ static ssize_t wsa881x_swrslave_reg_show(char __user *ubuf, size_t count,
 			continue;
 		swr_read(dbgwsa881x->swr_slave, devnum,
 			i, &reg_val, 1);
-		len = snprintf(tmp_buf, sizeof(tmp_buf), "0x%.3x: 0x%.2x\n", i,
+		len = snprintf(tmp_buf, 25, "0x%.3x: 0x%.2x\n", i,
 			       (reg_val & 0xFF));
 		if ((total + len) >= count - 1)
 			break;
@@ -1147,6 +1147,9 @@ static int wsa881x_probe(struct snd_soc_codec *codec)
 	if (!wsa881x)
 		return -EINVAL;
 
+	if (wsa_max_devs == 0)
+		return 0;
+
 	dev = wsa881x->swr_slave;
 	wsa881x->codec = codec;
 	mutex_init(&wsa881x->bg_lock);
@@ -1267,6 +1270,10 @@ static int wsa881x_swr_probe(struct swr_device *pdev)
 			    GFP_KERNEL);
 	if (!wsa881x)
 		return -ENOMEM;
+
+	if (wsa_max_devs == 0)
+		return 0;
+
 	wsa881x->wsa_rst_np = of_parse_phandle(pdev->dev.of_node,
 					     "qcom,spkr-sd-n-node", 0);
 	if (!wsa881x->wsa_rst_np) {
@@ -1409,6 +1416,10 @@ static int wsa881x_swr_down(struct swr_device *pdev)
 {
 	struct wsa881x_priv *wsa881x;
 	int ret;
+
+	/* Nothing to take down */
+	if (wsa_max_devs == 0)
+		return 0;
 
 	wsa881x = swr_get_dev_data(pdev);
 	if (!wsa881x) {
