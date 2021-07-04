@@ -77,6 +77,8 @@
 
 #define MSM_HIFI_ON 1
 
+u32 wsa_max_devs;
+
 enum {
 	SLIM_RX_0 = 0,
 	SLIM_RX_1,
@@ -7009,7 +7011,6 @@ static int msm_init_wsa_dev(struct platform_device *pdev,
 				struct snd_soc_card *card)
 {
 	struct device_node *wsa_of_node;
-	u32 wsa_max_devs;
 	u32 wsa_dev_cnt;
 	int i;
 	struct msm_wsa881x_dev_info *wsa881x_dev_info;
@@ -7025,6 +7026,7 @@ static int msm_init_wsa_dev(struct platform_device *pdev,
 		dev_dbg(&pdev->dev,
 			 "%s: wsa-max-devs property missing in DT %s, ret = %d\n",
 			 __func__, pdev->dev.of_node->full_name, ret);
+		wsa_max_devs = 0;
 		goto err_dt;
 	}
 	if (wsa_max_devs == 0) {
