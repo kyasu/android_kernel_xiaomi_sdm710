@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2018, 2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,6 +20,8 @@
 #include "codecs/wcd9335.h"
 
 #define DEV_NAME_STR_LEN            32
+
+u32 wsa_max_devs;
 
 /* dummy definition of below deprecated FE DAI's*/
 enum {
@@ -782,12 +784,13 @@ static struct snd_soc_dai_link msm8952_common_fe_dai[] = {
 		.codec_name = "snd-soc-dummy",
 	},
 	{/* hw:x,28 */
-		.name = "MSM8X16 Compress3",
-		.stream_name = "Compress3",
+		.name = "MSM8X16 MultiMedia10",
+		.stream_name = "MultiMedia10",
 		.cpu_dai_name	= "MultiMedia10",
 		.platform_name  = "msm-pcm-dsp.1",
 		.dynamic = 1,
 		.dpcm_playback = 1,
+		.dpcm_capture = 1,
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
 			 SND_SOC_DPCM_TRIGGER_POST},
 		.codec_dai_name = "snd-soc-dummy-dai",
@@ -1259,6 +1262,33 @@ static struct snd_soc_dai_link msm8952_common_be_dai[] = {
 		.ops = &msm8952_quin_mi2s_be_ops,
 		.ignore_suspend = 1,
 	},
+	/* Proxy Tx BACK END DAI Link */
+	{
+		.name = LPASS_BE_PROXY_TX,
+		.stream_name = "Proxy Capture",
+		.cpu_dai_name = "msm-dai-q6-dev.8195",
+		.platform_name = "msm-pcm-routing",
+		.codec_name = "msm-stub-codec.1",
+		.codec_dai_name = "msm-stub-tx",
+		.no_pcm = 1,
+		.dpcm_capture = 1,
+		.id = MSM_BACKEND_DAI_PROXY_TX,
+		.ignore_suspend = 1,
+	},
+	/* Proxy Rx BACK END DAI Link */
+	{
+		.name = LPASS_BE_PROXY_RX,
+		.stream_name = "Proxy Playback",
+		.cpu_dai_name = "msm-dai-q6-dev.8194",
+		.platform_name = "msm-pcm-routing",
+		.codec_name = "msm-stub-codec.1",
+		.codec_dai_name = "msm-stub-rx",
+		.no_pcm = 1,
+		.dpcm_playback = 1,
+		.id = MSM_BACKEND_DAI_PROXY_RX,
+		.ignore_pmdown_time = 1,
+		.ignore_suspend = 1,
+	},
 };
 
 static struct snd_soc_dai_link msm8952_hdmi_dba_dai_link[] = {
@@ -1380,7 +1410,6 @@ int msm8952_init_wsa_dev(struct platform_device *pdev,
 			struct snd_soc_card *card)
 {
 	struct device_node *wsa_of_node;
-	u32 wsa_max_devs;
 	u32 wsa_dev_cnt;
 	char *dev_name_str = NULL;
 	struct msm895x_wsa881x_dev_info *wsa881x_dev_info;
@@ -1397,6 +1426,7 @@ int msm8952_init_wsa_dev(struct platform_device *pdev,
 			"%s: wsa-max-devs property missing in DT %s, ret = %d\n",
 			__func__, pdev->dev.of_node->full_name, ret);
 		card->num_aux_devs = 0;
+		wsa_max_devs = 0;
 		return 0;
 	}
 	if (wsa_max_devs == 0) {
