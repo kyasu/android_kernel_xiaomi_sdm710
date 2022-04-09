@@ -110,6 +110,8 @@ struct dsi_backlight_config {
 	u32 bl_level;
 	u32 bl_scale;
 	u32 bl_scale_ad;
+	u32 bl_doze_lbm;
+	u32 bl_doze_hbm;
 
 	int en_gpio;
 	bool dcs_type_ss;
@@ -261,6 +263,7 @@ struct dsi_panel {
 	bool fod_backlight_flag;
 	bool fod_flag;
 	bool in_aod;
+	bool in_aod_hbm;
 	u32 fod_target_backlight;
 
 	bool fod_crc_p3_gamut_calibration;
@@ -383,5 +386,7 @@ int dsi_panel_parse_esd_reg_read_configs(struct dsi_panel *panel,
 				struct device_node *of_node);
 
 void dsi_panel_ext_bridge_put(struct dsi_panel *panel);
+
+u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel);
 
 #endif /* _DSI_PANEL_H_ */

@@ -2855,8 +2855,9 @@ static int sde_crtc_config_fingerprint_dim_layer(struct drm_crtc_state *crtc_sta
 	struct sde_crtc_state *cstate;
 	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
 	struct sde_hw_dim_layer *fingerprint_dim_layer;
-	int alpha = dim_layer_alpha;
+	uint32_t alpha = dim_layer_alpha;
 	struct sde_kms *kms;
+	struct dsi_display *display;
 
 	kms = _sde_crtc_get_kms(crtc_state->crtc);
 	if (!kms || !kms->catalog) {
@@ -2870,6 +2871,16 @@ static int sde_crtc_config_fingerprint_dim_layer(struct drm_crtc_state *crtc_sta
 		pr_err("failed to get available dim layer for custom\n");
 		return -EINVAL;
 	}
+
+	display = get_primary_display();
+	if (!display || !display->panel) {
+		SDE_ERROR("Invalid primary display\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&display->panel->panel_lock);
+	alpha = dsi_panel_get_fod_dim_alpha(display->panel);
+	mutex_unlock(&display->panel->panel_lock);
 
 	if (!alpha) {
 		cstate->fingerprint_dim_layer = NULL;
