@@ -2613,33 +2613,6 @@ error:
 	return rc;
 }
 
-static struct brightness_alpha_pair {
-	u32 brightness;
-	u32 alpha;
-} fod_dim_lut[] = {
-	{ 0,    0xFF },
-	{ 3,    0xF4 },
-	{ 13,   0xE9 },
-	{ 31,   0xDE },
-	{ 58,   0xD3 },
-	{ 96,   0xC8 },
-	{ 143,  0xBD },
-	{ 200,  0xB2 },
-	{ 269,  0xA7 },
-	{ 348,  0x9C },
-	{ 439,  0x91 },
-	{ 551,  0x85 },
-	{ 667,  0x7A },
-	{ 794,  0x6F },
-	{ 934,  0x64 },
-	{ 1086, 0x59 },
-	{ 1250, 0x4E },
-	{ 1427, 0x43 },
-	{ 1618, 0x38 },
-	{ 1821, 0x2D },
-	{ 2047, 0x22 }
-};
-
 static u32 dsi_panel_get_backlight(struct dsi_panel *panel)
 {
 	u32 bl_level;
@@ -2662,23 +2635,86 @@ static u32 interpolate(uint32_t x, uint32_t xa, uint32_t xb, uint32_t ya, uint32
 u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel)
 {
 	u32 brightness = dsi_panel_get_backlight(panel);
-	int fod_dim_lut_count =
-		sizeof(fod_dim_lut)/sizeof(struct brightness_alpha_pair);
 	int i;
 
-	for (i = 0; i < fod_dim_lut_count; i++)
-		if (fod_dim_lut[i].brightness >= brightness)
+	if (!panel->fod_dim_lut)
+		return 0;
+
+	for (i = 0; i < panel->fod_dim_lut_count; i++)
+		if (panel->fod_dim_lut[i].brightness >= brightness)
 			break;
 
 	if (i == 0)
-		return fod_dim_lut[i].alpha;
+		return panel->fod_dim_lut[i].alpha;
 
-	if (i == fod_dim_lut_count)
-		return fod_dim_lut[i - 1].alpha;
+	if (i == panel->fod_dim_lut_count)
+		return panel->fod_dim_lut[i - 1].alpha;
 
 	return interpolate(brightness,
-		fod_dim_lut[i - 1].brightness, fod_dim_lut[i].brightness,
-		fod_dim_lut[i - 1].alpha, fod_dim_lut[i].alpha);
+		panel->fod_dim_lut[i - 1].brightness, panel->fod_dim_lut[i].brightness,
+		panel->fod_dim_lut[i - 1].alpha, panel->fod_dim_lut[i].alpha);
+}
+
+static int dsi_panel_parse_fod_dim_lut(struct dsi_panel *panel,
+				       struct device_node *of_node)
+{
+	struct brightness_alpha_pair *lut;
+	u32 *array;
+	int count;
+	int len;
+	int rc;
+	int i;
+
+	len = of_property_count_u32_elems(of_node, "qcom,disp-fod-dim-lut");
+	if (len <= 0 || len % BRIGHTNESS_ALPHA_PAIR_LEN) {
+		pr_err("[%s] Invalid number of elements, len=%d\n",
+		       panel->name, len);
+		rc = -EINVAL;
+		goto count_fail;
+	}
+
+	array = kcalloc(len, sizeof(u32), GFP_KERNEL);
+	if (!array) {
+		pr_err("[%s] Failed to allocate memory\n", panel->name);
+		rc = -ENOMEM;
+		goto alloc_array_fail;
+	}
+
+	rc = of_property_read_u32_array(of_node,
+			"qcom,disp-fod-dim-lut", array, len);
+	if (rc) {
+		pr_err("[%s] Failed to read LUT, rc=%d\n",
+		       panel->name, rc);
+		goto read_fail;
+	}
+
+	count = len / BRIGHTNESS_ALPHA_PAIR_LEN;
+	lut = kcalloc(count, sizeof(*lut), GFP_KERNEL);
+	if (!lut) {
+		pr_err("[%s] Failed to allocate LUT memory\n", panel->name);
+		rc = -ENOMEM;
+		goto alloc_lut_fail;
+	}
+
+	for (i = 0; i < count; i++) {
+		struct brightness_alpha_pair *pair = &lut[i];
+		pair->brightness = array[i * BRIGHTNESS_ALPHA_PAIR_LEN + 0];
+		pair->alpha = array[i * BRIGHTNESS_ALPHA_PAIR_LEN + 1];
+	}
+
+	panel->fod_dim_lut = lut;
+	panel->fod_dim_lut_count = count;
+
+alloc_lut_fail:
+read_fail:
+	kfree(array);
+alloc_array_fail:
+count_fail:
+	if (rc) {
+		panel->fod_dim_lut = NULL;
+		panel->fod_dim_lut_count = 0;
+	}
+	return rc;
 }
 
 static int dsi_panel_parse_bl_config(struct dsi_panel *panel,
@@ -2767,6 +2803,11 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel,
 		pr_debug("set doze hbm backlight to 0\n");
 	} else {
 		panel->bl_config.bl_doze_hbm = val;
+	}
+
+	rc = dsi_panel_parse_fod_dim_lut(panel, of_node);
+	if (rc) {
+		pr_err("[%s] failed to parse fod dim lut\n", panel->name);
 	}
 
 	if (panel->bl_config.type == DSI_BACKLIGHT_PWM) {

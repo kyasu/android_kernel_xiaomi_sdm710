@@ -68,6 +68,30 @@
 		qcom,disp-doze-lbm-backlight = <20>;
 		qcom,disp-doze-hbm-backlight = <266>;
 		qcom,disp-fod-off-dimming-delay = <85>;
+		qcom,disp-fod-dim-lut = <
+			/* brightness, alpha */
+			0	0xff
+			3	0xf4
+			13	0xe9
+			31	0xde
+			58	0xd3
+			96	0xc8
+			143	0xbd
+			200	0xb2
+			269	0xa7
+			348	0x9c
+			439	0x91
+			551	0x85
+			667	0x7a
+			794	0x6f
+			934	0x64
+			1086	0x59
+			1250	0x4e
+			1427	0x43
+			1618	0x38
+			1821	0x2d
+			2047	0x22
+		>;
 		qcom,mdss-dsi-panel-elvss-dimming-read-length = <1>;
 
 		qcom,disp-fod-crc-p3-gamut-calibration;

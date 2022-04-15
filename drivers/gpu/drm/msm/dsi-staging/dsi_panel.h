@@ -190,6 +190,12 @@ struct dsi_read_config {
 	u8 rbuf[64];
 };
 
+#define BRIGHTNESS_ALPHA_PAIR_LEN 2
+struct brightness_alpha_pair {
+	u32 brightness;
+	u32 alpha;
+};
+
 struct dsi_panel {
 	const char *name;
 	enum dsi_panel_type type;
@@ -286,6 +292,9 @@ struct dsi_panel {
 	bool dim_layer_replace_dc;
 	bool fod_dimlayer_bl_block;
 	bool fodflag;
+
+	u32 fod_dim_lut_count;
+	struct brightness_alpha_pair *fod_dim_lut;
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
