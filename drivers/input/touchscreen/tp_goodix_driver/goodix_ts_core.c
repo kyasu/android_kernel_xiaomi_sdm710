@@ -1326,10 +1326,8 @@ static void goodix_switch_mode_work(struct work_struct *work)
 	if (value >= INPUT_EVENT_WAKUP_MODE_OFF
 		&& value <= INPUT_EVENT_WAKUP_MODE_ON) {
 		info->double_wakeup = value - INPUT_EVENT_WAKUP_MODE_OFF;
-		if (info->fod_status == -1 || info->fod_status == 100)
-			info->gesture_enabled = info->double_wakeup | info->aod_status;
-		else
-			info->gesture_enabled = info->double_wakeup | info->fod_status | info->aod_status;
+		info->gesture_enabled = info->double_wakeup |
+			info->fod_status | info->aod_status;
 		/*goodix_gesture_enable(!!info->gesture_enabled);*/
 	}
 }
@@ -2355,23 +2353,20 @@ static int gtp_set_cur_value(int gtp_mode, int gtp_value)
 	if (gtp_mode == Touch_Fod_Enable && goodix_core_data && gtp_value >= 0) {
 		ts_info("set fod status:%d", gtp_value);
 		goodix_core_data->fod_status = gtp_value;
-		if (goodix_core_data->fod_status == -1 || goodix_core_data->fod_status == 100)
-			goodix_core_data->gesture_enabled = goodix_core_data->double_wakeup | goodix_core_data->aod_status;
-		else
-			goodix_core_data->gesture_enabled = goodix_core_data->double_wakeup |
-				goodix_core_data->fod_status | goodix_core_data->aod_status;
-
+		goodix_core_data->gesture_enabled =
+			goodix_core_data->double_wakeup |
+			goodix_core_data->fod_status |
+			goodix_core_data->aod_status;
 		queue_work(goodix_core_data->touch_feature_wq, &goodix_core_data->fod_set_work);
 		return 0;
 	}
 	if (gtp_mode == Touch_Aod_Enable && goodix_core_data && gtp_value >= 0) {
 		ts_info("set aod status %d", gtp_value);
 		goodix_core_data->aod_status = gtp_value;
-		if (goodix_core_data->fod_status == -1 || goodix_core_data->fod_status == 100)
-			goodix_core_data->gesture_enabled = goodix_core_data->double_wakeup | goodix_core_data->aod_status;
-		else
-			goodix_core_data->gesture_enabled = goodix_core_data->double_wakeup |
-				goodix_core_data->fod_status | 	goodix_core_data->aod_status;
+		goodix_core_data->gesture_enabled =
+			goodix_core_data->double_wakeup |
+			goodix_core_data->fod_status |
+			goodix_core_data->aod_status;
 		queue_work(goodix_core_data->touch_feature_wq, &goodix_core_data->aod_set_work);
 		return 0;
 	}
