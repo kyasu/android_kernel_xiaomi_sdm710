@@ -81,6 +81,7 @@
 
 #define CENTER_X 540
 #define CENTER_Y 2030
+#define FOD_RADIUS 92
 
 #define KEY_GOTO                                0x162
 #define BTN_INFO                                0x152
@@ -484,6 +485,8 @@ struct goodix_ts_core {
 	int gesture_enabled;
 	int fod_status;
 	int aod_status;
+	int fod_x;
+	int fod_y;
 	int fod_pressed;
 	int fod_test;
 	int double_wakeup;
@@ -803,5 +806,12 @@ extern int goodix_tools_register(void);
 extern int goodix_tools_unregister(void);
 
 extern struct goodix_ts_core *goodix_core_data;
+
+static inline bool goodix_ts_finger_in_fod(int x, int y)
+{
+	x -= CENTER_X;
+	y -= CENTER_Y;
+	return (x * x + y * y) < (FOD_RADIUS * FOD_RADIUS);
+}
 
 #endif
