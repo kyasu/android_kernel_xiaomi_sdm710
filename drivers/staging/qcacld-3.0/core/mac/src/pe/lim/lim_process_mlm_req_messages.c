@@ -39,6 +39,7 @@
 #include "wma_if.h"
 #include "wlan_reg_services_api.h"
 #include "lim_process_fils.h"
+#include "wlan_mlme_main.h"
 
 static void lim_process_mlm_start_req(tpAniSirGlobal, uint32_t *);
 static void lim_process_mlm_join_req(tpAniSirGlobal, uint32_t *);
@@ -636,11 +637,8 @@ static void lim_post_join_set_link_state_callback(tpAniSirGlobal mac,
 	}
 
 	qdf_mem_free(session_cb_param);
-	pe_debug("Sessionid %d set link state(%d) cb status: %d",
-			session_entry->peSessionId, session_entry->limMlmState,
-			status);
-
 	if (!status) {
+
 		pe_err("failed to find pe session for session id:%d",
 			session_entry->peSessionId);
 		goto failure;
@@ -655,12 +653,6 @@ static void lim_post_join_set_link_state_callback(tpAniSirGlobal mac,
 	session_entry->channelChangeReasonCode =
 			 LIM_SWITCH_CHANNEL_JOIN;
 	session_entry->pLimMlmReassocRetryReq = NULL;
-	pe_debug("[lim_process_mlm_join_req]: suspend link success(%d) "
-		"on sessionid: %d setting channel to: %d with ch_width :%d "
-		"and maxtxPower: %d", status, session_entry->peSessionId,
-		session_entry->currentOperChannel,
-		session_entry->ch_width,
-		session_entry->maxTxPower);
 	lim_set_channel(mac, session_entry->currentOperChannel,
 		session_entry->ch_center_freq_seg0,
 		session_entry->ch_center_freq_seg1,
@@ -717,9 +709,6 @@ lim_process_mlm_post_join_suspend_link(tpAniSirGlobal mac_ctx,
 		session->peSessionId;
 
 	lnk_state = eSIR_LINK_PREASSOC_STATE;
-	pe_debug("[lim_process_mlm_join_req]: lnk_state: %d",
-		lnk_state);
-
 	pe_session_param = qdf_mem_malloc(sizeof(struct session_params));
 	if (pe_session_param) {
 		pe_session_param->session_id = session->peSessionId;
@@ -746,7 +735,7 @@ lim_process_mlm_post_join_suspend_link(tpAniSirGlobal mac_ctx,
 
 	return;
 error:
-	mlm_join_cnf.resultCode = eSIR_SME_RESOURCES_UNAVAILABLE;
+	mlm_join_cnf.resultCode = eSIR_SME_PEER_CREATE_FAILED;
 	mlm_join_cnf.sessionId = session->peSessionId;
 	mlm_join_cnf.protStatusCode = eSIR_MAC_UNSPEC_FAILURE_STATUS;
 	lim_post_sme_message(mac_ctx, LIM_MLM_JOIN_CNF,
@@ -803,27 +792,8 @@ static void lim_process_mlm_join_req(tpAniSirGlobal mac_ctx, uint32_t *msg)
 		/* Hold onto Join request parameters */
 
 		session->pLimMlmJoinReq = (tpLimMlmJoinReq) msg;
-		if (is_lim_session_off_channel(mac_ctx, sessionid)) {
-			pe_debug("SessionId:%d LimSession is on OffChannel",
-				sessionid);
-			/* suspend link */
-			pe_debug("Suspend link, sessionid %d is off channel",
-				sessionid);
-			lim_process_mlm_post_join_suspend_link(mac_ctx,
+		lim_process_mlm_post_join_suspend_link(mac_ctx,
 				QDF_STATUS_SUCCESS, (uint32_t *)session);
-		} else {
-			pe_debug("No need to Suspend link");
-			 /*
-			  * No need to Suspend link as LimSession is not
-			  * off channel, calling
-			  * lim_process_mlm_post_join_suspend_link with
-			  * status as SUCCESS.
-			  */
-			pe_debug("SessionId:%d Join req on current chan",
-				sessionid);
-			lim_process_mlm_post_join_suspend_link(mac_ctx,
-				QDF_STATUS_SUCCESS, (uint32_t *)session);
-		}
 		return;
 	} else {
 		/**
@@ -1045,12 +1015,11 @@ static void lim_process_mlm_auth_req(tpAniSirGlobal mac_ctx, uint32_t *msg)
 		return;
 	}
 
-	pe_debug("Process Auth Req sessionID %d Systemrole %d"
-		       "mlmstate %d from: " MAC_ADDRESS_STR
-		       " with authtype %d", session_id,
-		GET_LIM_SYSTEM_ROLE(session), session->limMlmState,
-		MAC_ADDR_ARRAY(mac_ctx->lim.gpLimMlmAuthReq->peerMacAddr),
-		mac_ctx->lim.gpLimMlmAuthReq->authType);
+	pe_debug("vdev %d Systemrole %d mlmstate %d from: " QDF_MAC_ADDR_STR "with authtype %d",
+		 session->smeSessionId, GET_LIM_SYSTEM_ROLE(session),
+		 session->limMlmState,
+		 QDF_MAC_ADDR_ARRAY(mac_ctx->lim.gpLimMlmAuthReq->peerMacAddr),
+		 mac_ctx->lim.gpLimMlmAuthReq->authType);
 
 	sir_copy_mac_addr(curr_bssid, session->bssId);
 
@@ -1184,6 +1153,27 @@ end:
 			     (uint32_t *) &mlm_auth_cnf);
 }
 
+#ifdef WLAN_FEATURE_11W
+static void lim_store_pmfcomeback_timerinfo(struct sPESession *session_entry)
+{
+	if (session_entry->pePersona != QDF_STA_MODE ||
+	    !session_entry->limRmfEnabled)
+		return;
+	/*
+	 * Store current MLM state in case ASSOC response returns with
+	 * TRY_AGAIN_LATER return code.
+	 */
+	session_entry->pmf_retry_timer_info.limPrevMlmState =
+		session_entry->limPrevMlmState;
+	session_entry->pmf_retry_timer_info.limMlmState =
+		session_entry->limMlmState;
+}
+#else
+static void lim_store_pmfcomeback_timerinfo(struct sPESession *session_entry)
+{
+}
+#endif /* WLAN_FEATURE_11W */
+
 /**
  * lim_process_mlm_assoc_req() - This function is called to process
  * MLM_ASSOC_REQ message from SME
@@ -1244,13 +1234,13 @@ static void lim_process_mlm_assoc_req(tpAniSirGlobal mac_ctx, uint32_t *msg_buf)
 	/* map the session entry pointer to the AssocFailureTimer */
 	mac_ctx->lim.limTimers.gLimAssocFailureTimer.sessionId =
 		mlm_assoc_req->sessionId;
+	lim_store_pmfcomeback_timerinfo(session_entry);
 	session_entry->limPrevMlmState = session_entry->limMlmState;
 	session_entry->limMlmState = eLIM_MLM_WT_ASSOC_RSP_STATE;
 	MTRACE(mac_trace(mac_ctx, TRACE_CODE_MLM_STATE,
 			 session_entry->peSessionId,
 			 session_entry->limMlmState));
-	pe_debug("SessionId:%d Sending Assoc_Req Frame",
-		session_entry->peSessionId);
+	pe_debug("vdev %d Sending Assoc_Req Frame", session_entry->smeSessionId);
 
 	/* Prepare and send Association request frame */
 	lim_send_assoc_req_mgmt_frame(mac_ctx, mlm_assoc_req, session_entry);
@@ -1315,12 +1305,6 @@ lim_process_mlm_disassoc_req_ntf(tpAniSirGlobal mac_ctx,
 		mlm_disassoccnf.resultCode = eSIR_SME_INVALID_PARAMETERS;
 		goto end;
 	}
-
-	pe_debug("Process DisAssoc Req on sessionID %d Systemrole %d"
-		   "mlmstate %d from: " MAC_ADDRESS_STR,
-		mlm_disassocreq->sessionId, GET_LIM_SYSTEM_ROLE(session),
-		session->limMlmState,
-		MAC_ADDR_ARRAY(mlm_disassocreq->peer_macaddr.bytes));
 
 	qdf_mem_copy(curr_bssid.bytes, session->bssId, QDF_MAC_ADDR_SIZE);
 
@@ -1608,10 +1592,6 @@ lim_process_mlm_disassoc_req(tpAniSirGlobal mac_ctx, uint32_t *msg_buf)
 	}
 
 	mlm_disassoc_req = (tLimMlmDisassocReq *) msg_buf;
-	pe_debug("Process disassoc req, sessionID %d from: "MAC_ADDRESS_STR,
-		mlm_disassoc_req->sessionId,
-		MAC_ADDR_ARRAY(mlm_disassoc_req->peer_macaddr.bytes));
-
 	lim_process_mlm_disassoc_req_ntf(mac_ctx, QDF_STATUS_SUCCESS,
 					 (uint32_t *) msg_buf);
 }
@@ -1654,12 +1634,6 @@ lim_process_mlm_deauth_req_ntf(tpAniSirGlobal mac_ctx,
 		qdf_mem_free(mlm_deauth_req);
 		return;
 	}
-	pe_debug("Process Deauth Req on sessionID %d Systemrole %d"
-		       "mlmstate %d from: " MAC_ADDRESS_STR,
-		mlm_deauth_req->sessionId,
-		GET_LIM_SYSTEM_ROLE(session),
-		session->limMlmState,
-		MAC_ADDR_ARRAY(mlm_deauth_req->peer_macaddr.bytes));
 	sir_copy_mac_addr(curr_bssId, session->bssId);
 
 	switch (GET_LIM_SYSTEM_ROLE(session)) {
@@ -1694,11 +1668,6 @@ lim_process_mlm_deauth_req_ntf(tpAniSirGlobal mac_ctx,
 					qdf_mem_free(mlm_deauth_req);
 					return;
 				}
-
-				pe_debug("send deauth rsp with ret code %d for" MAC_ADDRESS_STR,
-					eSIR_SME_DEAUTH_STATUS,
-					MAC_ADDR_ARRAY(
-					  mlm_deauth_req->peer_macaddr.bytes));
 
 				sme_deauth_rsp->messageType =
 						eWNI_SME_DEAUTH_RSP;
@@ -1902,11 +1871,6 @@ lim_process_mlm_deauth_req(tpAniSirGlobal mac_ctx, uint32_t *msg_buf)
 	}
 
 	mlm_deauth_req = (tLimMlmDeauthReq *) msg_buf;
-	pe_debug("Process Deauth Req on sessionID %d from: "
-		   MAC_ADDRESS_STR,
-		mlm_deauth_req->sessionId,
-		MAC_ADDR_ARRAY(mlm_deauth_req->peer_macaddr.bytes));
-
 	session = pe_find_session_by_session_id(mac_ctx,
 				mlm_deauth_req->sessionId);
 	if (NULL == session) {
@@ -2223,48 +2187,100 @@ static void lim_process_periodic_join_probe_req_timer(tpAniSirGlobal mac_ctx)
 	}
 }
 
+static void lim_handle_sae_auth_timeout(tpAniSirGlobal mac_ctx,
+					tpPESession session_entry)
+{
+	struct sae_auth_retry *sae_retry;
+	struct wlan_objmgr_vdev *vdev;
+
+	vdev = wlan_objmgr_get_vdev_by_id_from_psoc(mac_ctx->psoc,
+			session_entry->smeSessionId,
+			WLAN_LEGACY_MAC_ID);
+	if (!vdev) {
+		pe_err("vdev is NULL for vdev id %d",
+		       session_entry->smeSessionId);
+		return;
+	}
+
+	sae_retry = mlme_get_sae_auth_retry(vdev);
+	if (!(sae_retry && sae_retry->sae_auth.ptr)) {
+		pe_debug("sae auth frame is not buffered vdev id %d",
+			 session_entry->smeSessionId);
+		wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
+		return;
+	}
+
+	pe_debug("retry sae auth for seq num %d vdev id %d",
+		 mac_ctx->mgmtSeqNum, session_entry->smeSessionId);
+	lim_send_frame(mac_ctx, session_entry->smeSessionId,
+		       sae_retry->sae_auth.ptr, sae_retry->sae_auth.len);
+
+	sae_retry->sae_auth_max_retry--;
+	/* Activate Auth Retry timer if max_retries are not done */
+	if (!sae_retry->sae_auth_max_retry || (tx_timer_activate(
+	    &mac_ctx->lim.limTimers.g_lim_periodic_auth_retry_timer) !=
+				TX_SUCCESS))
+		goto free_and_deactivate_timer;
+
+	wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
+	return;
+
+free_and_deactivate_timer:
+	lim_sae_auth_cleanup_retry(mac_ctx, session_entry->smeSessionId);
+	wlan_objmgr_vdev_release_ref(vdev, WLAN_LEGACY_MAC_ID);
+}
+
 /**
- * lim_process_auth_retry_timer()- function to Retry Auth
+ * lim_process_auth_retry_timer()- function to Retry Auth when auth timeout
+ * occurs
  * @mac_ctx:pointer to global mac
  *
  * Return: void
  */
-
 static void lim_process_auth_retry_timer(tpAniSirGlobal mac_ctx)
 {
-	tpPESession  session_entry;
+	tpPESession session_entry;
+	tAniAuthType auth_type;
+	tLimTimers *lim_timers = &mac_ctx->lim.limTimers;
+	uint16_t vdev_id =
+		lim_timers->g_lim_periodic_auth_retry_timer.sessionId;
 
-	session_entry =
-	  pe_find_session_by_session_id(mac_ctx,
-	  mac_ctx->lim.limTimers.g_lim_periodic_auth_retry_timer.sessionId);
+	session_entry = pe_find_session_by_session_id(mac_ctx, vdev_id);
+
 	if (NULL == session_entry) {
-		pe_err("session does not exist for given SessionId: %d",
-		  mac_ctx->lim.limTimers.
-			g_lim_periodic_auth_retry_timer.sessionId);
+		pe_err("session does not exist for vdev_id: %d", vdev_id);
 		return;
 	}
-
+	/*
+	 * For WPA3 SAE gLimAuthFailureTimer is not running hence
+	 *  we don't enter in below "if" block in case of wpa3 sae
+	 */
 	if (tx_timer_running(&mac_ctx->lim.limTimers.gLimAuthFailureTimer) &&
-	     (session_entry->limMlmState == eLIM_MLM_WT_AUTH_FRAME2_STATE) &&
-	     (LIM_AUTH_ACK_RCD_SUCCESS != mac_ctx->auth_ack_status)) {
+	    (session_entry->limMlmState == eLIM_MLM_WT_AUTH_FRAME2_STATE) &&
+	    (LIM_AUTH_ACK_RCD_SUCCESS != mac_ctx->auth_ack_status)) {
 		tSirMacAuthFrameBody    auth_frame;
-
 		/*
 		 * Send the auth retry only in case we have received ack failure
 		 * else just restart the retry timer.
 		 */
-		if (LIM_AUTH_ACK_RCD_FAILURE == mac_ctx->auth_ack_status) {
+		if (LIM_AUTH_ACK_RCD_FAILURE == mac_ctx->auth_ack_status &&
+		    mac_ctx->lim.gpLimMlmAuthReq) {
+			auth_type = mac_ctx->lim.gpLimMlmAuthReq->authType;
+
 			/* Prepare & send Authentication frame */
-			auth_frame.authAlgoNumber =
-			    (uint8_t) mac_ctx->lim.gpLimMlmAuthReq->authType;
+			if (session_entry->sae_pmk_cached &&
+			    auth_type == eSIR_AUTH_TYPE_SAE)
+				auth_frame.authAlgoNumber = eSIR_OPEN_SYSTEM;
+			else
+				auth_frame.authAlgoNumber = (uint8_t)auth_type;
+
 			auth_frame.authTransactionSeqNumber =
 						SIR_MAC_AUTH_FRAME_1;
 			auth_frame.authStatusCode = 0;
 			pe_debug("Retry Auth");
 			mac_ctx->auth_ack_status = LIM_AUTH_ACK_NOT_RCD;
 			lim_increase_fils_sequence_number(session_entry);
-			lim_send_auth_mgmt_frame(mac_ctx,
-				&auth_frame,
+			lim_send_auth_mgmt_frame(mac_ctx, &auth_frame,
 				mac_ctx->lim.gpLimMlmAuthReq->peerMacAddr,
 				LIM_NO_WEP_IN_FC, session_entry);
 		}
@@ -2278,8 +2294,12 @@ static void lim_process_auth_retry_timer(tpAniSirGlobal mac_ctx)
 			pe_err("could not activate Auth Retry failure timer");
 			return;
 		}
+
+		return;
 	}
-	return;
+
+	/* Auth retry time out for wpa3 sae */
+	lim_handle_sae_auth_timeout(mac_ctx, session_entry);
 } /*** lim_process_auth_retry_timer() ***/
 
 void lim_process_auth_failure_timeout(tpAniSirGlobal mac_ctx)
@@ -2443,13 +2463,22 @@ void lim_process_assoc_failure_timeout(tpAniSirGlobal mac_ctx,
 	 * when device has missed the assoc resp sent by peer.
 	 * By sending deauth try to clear the session created on peer device.
 	 */
-	pe_debug("Sessionid: %d try sending deauth on channel %d to BSSID: "
-		MAC_ADDRESS_STR, session->peSessionId,
-		session->currentOperChannel,
-		MAC_ADDR_ARRAY(session->bssId));
-	lim_send_deauth_mgmt_frame(mac_ctx, eSIR_MAC_UNSPEC_FAILURE_REASON,
-		session->bssId, session, false);
-
+	if (msg_type == LIM_ASSOC &&
+	    mlme_get_reconn_after_assoc_timeout_flag(mac_ctx->psoc,
+						     session->smeSessionId)) {
+		pe_debug("vdev: %d skip sending deauth on channel freq %d to BSSID: "
+			QDF_MAC_ADDR_STR, session->smeSessionId,
+			session->currentOperChannel,
+			QDF_MAC_ADDR_ARRAY(session->bssId));
+	} else {
+		pe_debug("vdev: %d try sending deauth on channel freq %d to BSSID: "
+			QDF_MAC_ADDR_STR, session->smeSessionId,
+			session->currentOperChannel,
+			QDF_MAC_ADDR_ARRAY(session->bssId));
+		lim_send_deauth_mgmt_frame(mac_ctx,
+					   eSIR_MAC_UNSPEC_FAILURE_REASON,
+					   session->bssId, session, false);
+	}
 	if ((LIM_IS_AP_ROLE(session)) ||
 	    ((session->limMlmState != eLIM_MLM_WT_ASSOC_RSP_STATE) &&
 	    (session->limMlmState != eLIM_MLM_WT_REASSOC_RSP_STATE) &&
@@ -2473,6 +2502,7 @@ void lim_process_assoc_failure_timeout(tpAniSirGlobal mac_ctx,
 			session->peSessionId, session->limMlmState));
 		/* Change timer for future activations */
 		lim_deactivate_and_change_timer(mac_ctx, eLIM_ASSOC_FAIL_TIMER);
+		lim_stop_pmfcomeback_timer(session);
 		/*
 		 * Free up buffer allocated for JoinReq held by
 		 * MLM state machine

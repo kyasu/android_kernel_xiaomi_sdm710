@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2018, 2020-2021 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -106,6 +106,23 @@
 #endif
 
 #ifndef CONFIG_HL_SUPPORT
+
+/**
+ * htt_rx_ring_smmu_mapped() - check if rx ring is smmu mapped or not
+ * @pdev: HTT pdev handle
+ *
+ * Return: true or false.
+ */
+static inline bool htt_rx_ring_smmu_mapped(htt_pdev_handle pdev)
+{
+	if (qdf_mem_smmu_s1_enabled(pdev->osdev) &&
+	    pdev->is_ipa_uc_enabled &&
+	    pdev->rx_ring.smmu_map)
+		return true;
+	else
+		return false;
+}
+
 /**
  * htt_get_first_packet_after_wow_wakeup() - get first packet after wow wakeup
  * @msg_word: pointer to rx indication message word
@@ -140,11 +157,8 @@ static void htt_rx_hash_deinit(struct htt_pdev_t *pdev)
 	if (NULL == pdev->rx_ring.hash_table)
 		return;
 
-	if (qdf_mem_smmu_s1_enabled(pdev->osdev) && pdev->is_ipa_uc_enabled &&
-	    pdev->rx_ring.smmu_map)
-		ipa_smmu = true;
-
 	qdf_spin_lock_bh(&(pdev->rx_ring.rx_hash_lock));
+	ipa_smmu = htt_rx_ring_smmu_mapped(pdev);
 	hash_table = pdev->rx_ring.hash_table;
 	pdev->rx_ring.hash_table = NULL;
 	qdf_spin_unlock_bh(&(pdev->rx_ring.rx_hash_lock));
@@ -159,14 +173,26 @@ static void htt_rx_hash_deinit(struct htt_pdev_t *pdev)
 							     listnode_offset);
 			if (hash_entry->netbuf) {
 				if (ipa_smmu) {
+					if (qdf_unlikely(
+						!qdf_nbuf_is_rx_ipa_smmu_map(
+							hash_entry->netbuf))) {
+						qdf_err("nbuf: %pK NOT mapped",
+							hash_entry->netbuf);
+						qdf_assert_always(0);
+					}
+					qdf_nbuf_set_rx_ipa_smmu_map(
+							hash_entry->netbuf,
+							false);
 					qdf_update_mem_map_table(pdev->osdev,
 						&mem_map_table,
 						QDF_NBUF_CB_PADDR(
 							hash_entry->netbuf),
 						HTT_RX_BUF_SIZE);
 
-					cds_smmu_map_unmap(false, 1,
-							   &mem_map_table);
+					qdf_assert_always(
+						!cds_smmu_map_unmap(
+							false, 1,
+							&mem_map_table));
 				}
 #ifdef DEBUG_DMA_DONE
 				qdf_nbuf_unmap(pdev->osdev, hash_entry->netbuf,
@@ -630,13 +656,8 @@ static int htt_rx_ring_fill_n(struct htt_pdev_t *pdev, int num)
 	int filled = 0;
 	int debt_served = 0;
 	qdf_mem_info_t mem_map_table = {0};
-	bool ipa_smmu = false;
 
 	idx = *(pdev->rx_ring.alloc_idx.vaddr);
-
-	if (qdf_mem_smmu_s1_enabled(pdev->osdev) && pdev->is_ipa_uc_enabled &&
-	    pdev->rx_ring.smmu_map)
-		ipa_smmu = true;
 
 	if ((idx < 0) || (idx > pdev->rx_ring.size_mask) ||
 	    (num > pdev->rx_ring.size))  {
@@ -732,14 +753,16 @@ moretofill:
 			pdev->rx_ring.buf.netbufs_ring[idx] = rx_netbuf;
 		}
 
-		if (ipa_smmu) {
+		/* Caller already protected this function with refill_lock */
+		if (qdf_nbuf_is_rx_ipa_smmu_map(rx_netbuf)) {
 			qdf_update_mem_map_table(pdev->osdev, &mem_map_table,
 						 paddr, HTT_RX_BUF_SIZE);
-			cds_smmu_map_unmap(true, 1, &mem_map_table);
+			qdf_assert_always(
+				!cds_smmu_map_unmap(true, 1, &mem_map_table));
 		}
 
 		pdev->rx_ring.buf.paddrs_ring[idx] = paddr_marked;
-		pdev->rx_ring.fill_cnt++;
+		qdf_atomic_inc(&pdev->rx_ring.fill_cnt);
 
 		num--;
 		idx++;
@@ -874,13 +897,13 @@ static inline unsigned int htt_rx_in_order_ring_elems(struct htt_pdev_t *pdev)
 void htt_rx_detach(struct htt_pdev_t *pdev)
 {
 	bool ipa_smmu = false;
+	qdf_nbuf_t nbuf;
+
 	qdf_timer_stop(&pdev->rx_ring.refill_retry_timer);
 	qdf_timer_free(&pdev->rx_ring.refill_retry_timer);
 	htt_rx_dbg_rxbuf_deinit(pdev);
 
-	if (qdf_mem_smmu_s1_enabled(pdev->osdev) && pdev->is_ipa_uc_enabled &&
-	    pdev->rx_ring.smmu_map)
-		ipa_smmu = true;
+	ipa_smmu = htt_rx_ring_smmu_mapped(pdev);
 
 	if (pdev->cfg.is_full_reorder_offload) {
 		qdf_mem_free_consistent(pdev->osdev, pdev->osdev->dev,
@@ -897,29 +920,31 @@ void htt_rx_detach(struct htt_pdev_t *pdev)
 		qdf_mem_info_t mem_map_table = {0};
 
 		while (sw_rd_idx != *(pdev->rx_ring.alloc_idx.vaddr)) {
+			nbuf = pdev->rx_ring.buf.netbufs_ring[sw_rd_idx];
 			if (ipa_smmu) {
+				if (qdf_unlikely(
+					!qdf_nbuf_is_rx_ipa_smmu_map(nbuf))) {
+					qdf_err("smmu not mapped, nbuf: %pK",
+						nbuf);
+					qdf_assert_always(0);
+				}
+				qdf_nbuf_set_rx_ipa_smmu_map(nbuf, false);
 				qdf_update_mem_map_table(pdev->osdev,
 					&mem_map_table,
-					QDF_NBUF_CB_PADDR(
-						pdev->rx_ring.buf.
-						netbufs_ring[sw_rd_idx]),
+					QDF_NBUF_CB_PADDR(nbuf),
 					HTT_RX_BUF_SIZE);
-				cds_smmu_map_unmap(false, 1,
-						   &mem_map_table);
+				qdf_assert_always(
+					!cds_smmu_map_unmap(false, 1,
+							    &mem_map_table));
 			}
 #ifdef DEBUG_DMA_DONE
-			qdf_nbuf_unmap(pdev->osdev,
-				       pdev->rx_ring.buf.
-				       netbufs_ring[sw_rd_idx],
+			qdf_nbuf_unmap(pdev->osdev, nbuf,
 				       QDF_DMA_BIDIRECTIONAL);
 #else
-			qdf_nbuf_unmap(pdev->osdev,
-				       pdev->rx_ring.buf.
-				       netbufs_ring[sw_rd_idx],
+			qdf_nbuf_unmap(pdev->osdev, nbuf,
 				       QDF_DMA_FROM_DEVICE);
 #endif
-			qdf_nbuf_free(pdev->rx_ring.buf.
-				      netbufs_ring[sw_rd_idx]);
+			qdf_nbuf_free(nbuf);
 			sw_rd_idx++;
 			sw_rd_idx &= pdev->rx_ring.size_mask;
 		}
@@ -1220,7 +1245,7 @@ static inline qdf_nbuf_t htt_rx_netbuf_pop(htt_pdev_handle pdev)
 	idx++;
 	idx &= pdev->rx_ring.size_mask;
 	pdev->rx_ring.sw_rd_idx.msdu_payld = idx;
-	pdev->rx_ring.fill_cnt--;
+	qdf_atomic_dec(&pdev->rx_ring.fill_cnt);
 	return msdu;
 }
 
@@ -1352,6 +1377,41 @@ void htt_set_checksum_result_hl(qdf_nbuf_t msdu,
 
 #ifdef DEBUG_DMA_DONE
 #define MAX_DONE_BIT_CHECK_ITER 5
+#endif
+
+#if defined(WLAN_FEATURE_TSF_PLUS) && !defined(CONFIG_HL_SUPPORT)
+/**
+ * htt_rx_tail_msdu_timestamp() - update tail msdu tsf64 timestamp
+ * @tail_rx_desc: pointer to tail msdu descriptor
+ * @timestamp_rx_desc: pointer to timestamp msdu descriptor
+ *
+ * Return: none
+ */
+static inline void htt_rx_tail_msdu_timestamp(
+			struct htt_host_rx_desc_base *tail_rx_desc,
+			struct htt_host_rx_desc_base *timestamp_rx_desc)
+{
+	if (tail_rx_desc) {
+		if (!timestamp_rx_desc) {
+			tail_rx_desc->ppdu_end.wb_timestamp_lower_32 = 0;
+			tail_rx_desc->ppdu_end.wb_timestamp_upper_32 = 0;
+		} else {
+			if (timestamp_rx_desc != tail_rx_desc) {
+				tail_rx_desc->ppdu_end.wb_timestamp_lower_32 =
+			timestamp_rx_desc->ppdu_end.wb_timestamp_lower_32;
+				tail_rx_desc->ppdu_end.wb_timestamp_upper_32 =
+			timestamp_rx_desc->ppdu_end.wb_timestamp_upper_32;
+			}
+		}
+	}
+}
+#else
+
+static inline void htt_rx_tail_msdu_timestamp(
+			struct htt_host_rx_desc_base *tail_rx_desc,
+			struct htt_host_rx_desc_base *timestamp_rx_desc)
+{
+}
 #endif
 
 #ifndef CONFIG_HL_SUPPORT
@@ -1876,12 +1936,12 @@ htt_rx_amsdu_rx_in_order_pop_ll(htt_pdev_handle pdev,
 	unsigned int msdu_count = 0;
 	uint8_t offload_ind, frag_ind;
 	uint8_t peer_id;
-	struct htt_host_rx_desc_base *rx_desc;
+	struct htt_host_rx_desc_base *rx_desc = NULL;
 	enum rx_pkt_fate status = RX_PKT_FATE_SUCCESS;
 	qdf_dma_addr_t paddr;
 	qdf_mem_info_t mem_map_table = {0};
 	int ret = 1;
-	bool ipa_smmu = false;
+	struct htt_host_rx_desc_base *timestamp_rx_desc = NULL;
 
 	HTT_ASSERT1(htt_rx_in_order_ring_elems(pdev) != 0);
 
@@ -1897,10 +1957,6 @@ htt_rx_amsdu_rx_in_order_pop_ll(htt_pdev_handle pdev,
 	/* Get the total number of MSDUs */
 	msdu_count = HTT_RX_IN_ORD_PADDR_IND_MSDU_CNT_GET(*(msg_word + 1));
 	HTT_RX_CHECK_MSDU_COUNT(msdu_count);
-
-	if (qdf_mem_smmu_s1_enabled(pdev->osdev) && pdev->is_ipa_uc_enabled &&
-	    pdev->rx_ring.smmu_map)
-		ipa_smmu = true;
 
 	ol_rx_update_histogram_stats(msdu_count, frag_ind, offload_ind);
 	htt_rx_dbg_rxbuf_httrxind(pdev, msdu_count);
@@ -1927,11 +1983,24 @@ htt_rx_amsdu_rx_in_order_pop_ll(htt_pdev_handle pdev,
 	}
 
 	while (msdu_count > 0) {
-		if (ipa_smmu) {
+		if (qdf_nbuf_is_rx_ipa_smmu_map(msdu)) {
+			/*
+			 * nbuf was already detached from hash_entry,
+			 * there is no parallel IPA context to access
+			 * this nbuf for smmu map/unmap, so updating
+			 * this flag here without lock.
+			 *
+			 * This flag was not updated in netbuf_pop context
+			 * htt_rx_hash_list_lookup (where lock held), to
+			 * differentiate whether this nbuf to be
+			 * smmu unmapped or it was never mapped so far.
+			 */
+			qdf_nbuf_set_rx_ipa_smmu_map(msdu, false);
 			qdf_update_mem_map_table(pdev->osdev, &mem_map_table,
 						 QDF_NBUF_CB_PADDR(msdu),
 						 HTT_RX_BUF_SIZE);
-			cds_smmu_map_unmap(false, 1, &mem_map_table);
+			qdf_assert_always(
+				!cds_smmu_map_unmap(false, 1, &mem_map_table));
 		}
 
 		/*
@@ -1991,6 +2060,10 @@ htt_rx_amsdu_rx_in_order_pop_ll(htt_pdev_handle pdev,
 		/* cache consistency has been taken care of by qdf_nbuf_unmap */
 		rx_desc = htt_rx_desc(msdu);
 		htt_rx_extract_lro_info(msdu, rx_desc);
+
+		/* check if the msdu is last mpdu */
+		if (rx_desc->attention.last_mpdu)
+			timestamp_rx_desc = rx_desc;
 
 		/*
 		 * Make the netbuf's data pointer point to the payload rather
@@ -2114,6 +2187,8 @@ htt_rx_amsdu_rx_in_order_pop_ll(htt_pdev_handle pdev,
 			qdf_nbuf_set_next(msdu, NULL);
 		}
 	}
+
+	htt_rx_tail_msdu_timestamp(rx_desc, timestamp_rx_desc);
 
 end:
 	return ret;
@@ -2463,7 +2538,8 @@ static void htt_rx_fill_ring_count(htt_pdev_handle pdev)
 {
 	int num_to_fill;
 
-	num_to_fill = pdev->rx_ring.fill_level - pdev->rx_ring.fill_cnt;
+	num_to_fill = pdev->rx_ring.fill_level -
+		qdf_atomic_read(&pdev->rx_ring.fill_cnt);
 	htt_rx_ring_fill_n(pdev, num_to_fill /* okay if <= 0 */);
 }
 #endif
@@ -2649,6 +2725,15 @@ htt_rx_hash_list_insert(struct htt_pdev_t *pdev,
 	RX_HASH_LOG(qdf_print("rx hash: %s: paddr 0x%x netbuf %pK bucket %d\n",
 			      __func__, paddr, netbuf, (int)i));
 
+	if (htt_rx_ring_smmu_mapped(pdev)) {
+		if (qdf_unlikely(qdf_nbuf_is_rx_ipa_smmu_map(netbuf))) {
+			qdf_err("Already smmu mapped, nbuf: %pK",
+				netbuf);
+			qdf_assert_always(0);
+		}
+		qdf_nbuf_set_rx_ipa_smmu_map(netbuf, true);
+	}
+
 	HTT_RX_HASH_COUNT_INCR(pdev->rx_ring.hash_table[i]);
 	HTT_RX_HASH_COUNT_PRINT(pdev->rx_ring.hash_table[i]);
 
@@ -2710,6 +2795,13 @@ qdf_nbuf_t htt_rx_hash_list_lookup(struct htt_pdev_t *pdev,
 
 			htt_rx_dbg_rxbuf_reset(pdev, netbuf);
 			break;
+		}
+	}
+
+	if (netbuf && htt_rx_ring_smmu_mapped(pdev)) {
+		if (qdf_unlikely(!qdf_nbuf_is_rx_ipa_smmu_map(netbuf))) {
+			qdf_err("smmu not mapped nbuf: %pK", netbuf);
+			qdf_assert_always(0);
 		}
 	}
 
@@ -2950,7 +3042,7 @@ int htt_rx_attach(struct htt_pdev_t *pdev)
 		 htt_rx_ring_refill_retry, (void *)pdev,
 		 QDF_TIMER_TYPE_SW);
 
-	pdev->rx_ring.fill_cnt = 0;
+	qdf_atomic_init(&pdev->rx_ring.fill_cnt);
 	pdev->rx_ring.pop_fail_cnt = 0;
 #ifdef DEBUG_DMA_DONE
 	pdev->rx_ring.dbg_ring_idx = 0;
@@ -3053,7 +3145,7 @@ static int htt_rx_ipa_uc_alloc_wdi2_rsc(struct htt_pdev_t *pdev,
 	pdev->ipa_uc_rx_rsc.rx2_ind_ring =
 		qdf_mem_shared_mem_alloc(pdev->osdev,
 					 rx_ind_ring_elements *
-					 sizeof(qdf_dma_addr_t));
+					 sizeof(target_paddr_t));
 	if (!pdev->ipa_uc_rx_rsc.rx2_ind_ring) {
 		QDF_TRACE(QDF_MODULE_ID_HTT, QDF_TRACE_LEVEL_ERROR,
 			  "%s: Unable to allocate memory for IPA rx2 ind ring",
@@ -3219,6 +3311,7 @@ static QDF_STATUS htt_rx_hash_smmu_map(bool map, struct htt_pdev_t *pdev)
 	struct htt_rx_hash_bucket **hash_table;
 	struct htt_list_node *list_iter = NULL;
 	qdf_mem_info_t mem_map_table = {0};
+	qdf_nbuf_t nbuf;
 	int ret;
 
 	qdf_spin_lock_bh(&pdev->rx_ring.rx_hash_lock);
@@ -3232,15 +3325,27 @@ static QDF_STATUS htt_rx_hash_smmu_map(bool map, struct htt_pdev_t *pdev)
 				(struct htt_rx_hash_entry *)((char *)list_iter -
 							     pdev->rx_ring.
 							     listnode_offset);
-			if (hash_entry->netbuf) {
+			nbuf = hash_entry->netbuf;
+			if (nbuf) {
+				if (qdf_unlikely(map ==
+					qdf_nbuf_is_rx_ipa_smmu_map(nbuf))) {
+					qdf_err("map/unmap err:%d, nbuf:%pK",
+						map, nbuf);
+					list_iter = list_iter->next;
+					continue;
+				}
+				qdf_nbuf_set_rx_ipa_smmu_map(nbuf, map);
 				qdf_update_mem_map_table(pdev->osdev,
 						&mem_map_table,
-						QDF_NBUF_CB_PADDR(
-							hash_entry->netbuf),
+						QDF_NBUF_CB_PADDR(nbuf),
 						HTT_RX_BUF_SIZE);
 				ret = cds_smmu_map_unmap(map, 1,
 							 &mem_map_table);
 				if (ret) {
+					qdf_nbuf_set_rx_ipa_smmu_map(nbuf,
+								     !map);
+					qdf_err("map: %d failure, nbuf: %pK",
+						map, nbuf);
 					qdf_spin_unlock_bh(
 						&pdev->rx_ring.rx_hash_lock);
 					return QDF_STATUS_E_FAILURE;
@@ -3265,7 +3370,6 @@ QDF_STATUS htt_rx_update_smmu_map(struct htt_pdev_t *pdev, bool map)
 		return QDF_STATUS_SUCCESS;
 
 	qdf_spin_lock_bh(&pdev->rx_ring.refill_lock);
-	pdev->rx_ring.smmu_map = map;
 	status = htt_rx_hash_smmu_map(map, pdev);
 	qdf_spin_unlock_bh(&pdev->rx_ring.refill_lock);
 
