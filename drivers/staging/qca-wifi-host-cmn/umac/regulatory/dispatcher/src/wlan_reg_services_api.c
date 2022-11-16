@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2018, 2021 The Linux Foundation. All rights reserved.
  *
  *
  * Permission to use, copy, modify, and/or distribute this software for
@@ -243,6 +243,12 @@ uint16_t wlan_reg_dmn_get_opclass_from_channel(uint8_t *country,
 						offset);
 }
 
+void wlan_reg_dmn_print_channels_in_opclass(uint8_t *country,
+					    uint8_t opclass)
+{
+	reg_dmn_print_channels_in_opclass(country, opclass);
+}
+
 uint16_t wlan_reg_dmn_get_chanwidth_from_opclass(uint8_t *country,
 						 uint8_t channel,
 						 uint8_t opclass)
@@ -439,6 +445,11 @@ bool wlan_reg_is_dfs_ch(struct wlan_objmgr_pdev *pdev,
 	return reg_is_dfs_ch(pdev, chan);
 }
 
+bool wlan_reg_is_indoor_chan(struct wlan_objmgr_pdev *pdev, uint32_t chan)
+{
+	return reg_is_indoor_chan(pdev, chan);
+}
+
 bool wlan_reg_is_passive_or_disable_ch(struct wlan_objmgr_pdev *pdev,
 				       uint32_t chan)
 {
@@ -461,6 +472,12 @@ uint32_t wlan_reg_chan_to_freq(struct wlan_objmgr_pdev *pdev,
 			       uint32_t chan_num)
 {
 	return reg_chan_to_freq(pdev, chan_num);
+}
+
+uint16_t wlan_reg_legacy_chan_to_freq(struct wlan_objmgr_pdev *pdev,
+				      uint8_t chan_num)
+{
+	return reg_legacy_chan_to_freq(pdev, chan_num);
 }
 
 bool wlan_reg_chan_is_49ghz(struct wlan_objmgr_pdev *pdev,
@@ -531,10 +548,16 @@ bool wlan_reg_is_etsi13_regdmn(struct wlan_objmgr_pdev *pdev)
 	return reg_is_etsi13_regdmn(pdev);
 }
 
-bool wlan_reg_is_etsi13_srd_chan_allowed_master_mode(struct wlan_objmgr_pdev
-						     *pdev)
+bool
+wlan_reg_is_etsi13_srd_chan_allowed_master_mode(struct wlan_objmgr_pdev *pdev,
+						enum QDF_OPMODE vdev_opmode)
 {
-	return reg_is_etsi13_srd_chan_allowed_master_mode(pdev);
+	return reg_is_etsi13_srd_chan_allowed_master_mode(pdev, vdev_opmode);
+}
+
+bool wlan_reg_is_nan_allowed_on_indoor(struct wlan_objmgr_pdev *pdev)
+{
+	return reg_is_nan_allowed_on_indoor(pdev);
 }
 
 bool wlan_reg_get_fcc_constraint(struct wlan_objmgr_pdev *pdev, uint32_t freq)
