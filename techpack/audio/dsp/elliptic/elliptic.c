@@ -97,7 +97,7 @@ void elliptic_notify_usbc_headset(int connected)
 	}
 }
 
-int is_usbc_headset_connected() {
+int is_usbc_headset_connected(void) {
 	return usbc_headset_connected;
 }
 
