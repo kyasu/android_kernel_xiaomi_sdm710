@@ -44,7 +44,22 @@
 	};
 
 	chosen {
-		bootargs = "rcupdate.rcu_expedited=1 core_ctl_disable_cpumask=6-7";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		bootargs = "rcupdate.rcu_expedited=1 core_ctl_disable_cpumask=6-7 earlycon=simplefb,0x9c000000,1080,2340 console=simplefb keep_bootcon";
+		stdout-path = "framebuffer";
+		framebuffer: framebuffer@9c000000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0x9c000000 0x0 0x2300000>;
+			width = <1080>;
+			height = <2340>;
+			stride = <(1080 * 4)>;
+			format = "a8r8g8b8";
+			status = "okay";
+			clocks = <&clock_gcc GCC_DISP_AXI_CLK>;
+		};
 	};
 
 	cpus {
@@ -597,7 +612,8 @@
 
 		cont_splash_memory: cont_splash_region@9c000000 {
 			reg = <0x0 0x9c000000 0x0 0x2300000>;
-			label = "cont_splash_region";
+			//label = "cont_splash_region";
+			no-map;
 		};
 
 		dfps_data_memory: dfps_data_region@9e300000 {
