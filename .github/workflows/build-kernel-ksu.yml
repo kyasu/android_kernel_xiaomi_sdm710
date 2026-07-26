@@ -1,0 +1,104 @@
+name: Build Kernel With KernelSU
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_on_default_branch:
+        description: Base On Default Branch
+        type: boolean
+        required: false
+        default: true
+      verbose_logs:
+        description: More Detailed Logs
+        type: boolean
+        required: false
+        default: false
+      kernel_arch:
+        description: Kernel - Arch
+        type: string
+        required: false
+        default: arm64
+      kernel_device:
+        description: Kernel - Device
+        type: string
+        required: false
+        default: grus
+      kernel_localversion:
+        description: Kernel - Local Version
+        type: string
+        required: false
+        default: wabby-wabbo
+      kernel_cross_compile:
+        description: Kernel - Cross Compile
+        type: string
+        required: false
+        default: aarch64-linux-gnu
+      kernel_custom_env_or_config:
+        description: Kernel - Custom ENV / CONFIG
+        type: string
+        required: false
+        default: CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+      llvm:
+        description: Use LLVM / Clang
+        type: boolean
+        required: false
+        default: true
+      prebuilt_clang_toolchain:
+        description: Prebuilt - Clang Toolchain
+        type: string
+        required: false
+        default: https://github.com/ketikai/android_kernel_xiaomi_sdm710/releases/download/prebuilt/clang-r596125.tar.xz
+      prebuilt_gcc_toolchain:
+        description: Prebuilt - GCC Toolchain
+        type: string
+        required: false
+        default: https://github.com/ketikai/android_kernel_xiaomi_sdm710/releases/download/prebuilt/linaro-gcc.tar.xz
+      ksu_provider:
+        description: KernelSU - Provider
+        type: choice
+        required: false
+        default: xxksu
+        options:
+        - xxksu
+        - resuki
+        - susfs
+      anykernel:
+        description: Assemble AnyKernel
+        type: boolean
+        required: false
+        default: true
+      prebuilt_anykernel_package:
+        description: Prebuilt - AnyKernel Package
+        type: string
+        required: false
+        default: https://github.com/ketikai/android_kernel_xiaomi_sdm710/releases/download/prebuilt/anykernel.tar.xz
+
+jobs:
+  select:
+    uses: ./.github/workflows/select-ksu.yml
+    with:
+      provider: ${{ inputs.ksu_provider }}
+
+  build:
+    uses: ./.github/workflows/build-kernel.yml
+    needs: 
+    - select
+    secrets: inherit
+    with:
+      base_on_default_branch: ${{ inputs.base_on_default_branch }}
+      verbose_logs: ${{ inputs.verbose_logs }}
+      kernel_arch: ${{ inputs.kernel_arch }}
+      kernel_device: ${{ inputs.kernel_device }}
+      kernel_localversion: ${{ inputs.kernel_localversion }}
+      kernel_cross_compile: ${{ inputs.kernel_cross_compile }}
+      kernel_custom_env_or_config: ${{ inputs.kernel_custom_env_or_config }}
+      llvm: ${{ inputs.llvm }}
+      prebuilt_clang_toolchain: ${{ inputs.prebuilt_clang_toolchain }}
+      prebuilt_gcc_toolchain: ${{ inputs.prebuilt_gcc_toolchain }}
+      ksu: true
+      ksu_setup_script: ${{ needs.select.outputs.setup_script }}
+      ksu_setup_branch: ${{ needs.select.outputs.setup_branch }}
+      ksu_manual_hooks: ${{ needs.select.outputs.manual_hooks }}
+      ksu_custom_env_or_config: ${{ needs.select.outputs.custom_env_or_config }}
+      anykernel: ${{ inputs.anykernel }}
+      prebuilt_anykernel_package: ${{ inputs.prebuilt_anykernel_package }}

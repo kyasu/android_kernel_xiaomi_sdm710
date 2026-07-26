@@ -1,0 +1,125 @@
+name: Build Kernel With KernelSU [TEST]
+
+on:
+  push:
+    branches:
+    - xxksu
+    - resuki
+    - susfs
+
+env:
+  BASE_BRANCH: ${{ github.event.repository.default_branch }}
+  CHECK_FLAG: feat(${{ github.ref_name }})
+  PATCHES_ARTIFACT: ${{ github.ref_name }}-manual-hooks.tar.xz
+  RELEASE_TAG: prebuilt
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    env:
+      PATCHES_DIR: .patches
+    if: toJson(github.event.commits) != '[]'
+    outputs:
+      can_build: ${{ steps.check_flag.outputs.result }}
+      artifact_id: ${{ steps.upload_patches.outputs.artifact-id }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ env.BASE_BRANCH }}
+
+    - name: Check Base
+      id: check_base
+      run: |
+        REF="${{ github.ref_name }}"
+        echo "head_ref_name=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        git remote set-branches --add origin $REF
+        git fetch origin $REF
+        git merge --ff-only origin/$REF
+
+    - name: Check Flag
+      id: check_flag
+      uses: actions/github-script@v9
+      with:
+        script: |
+          let commits = ${{ toJson(github.event.commits) }}
+          console.log('commits: ' + commits.length)
+          for (let i = 0; i < commits.length; i++) {
+            let message = commits[i].message
+            console.log(message + '\n---')
+            if (message.startsWith('${{ env.CHECK_FLAG }}')) {
+              return true
+            }
+          }
+          return false
+
+    - name: Format Patches
+      if: fromJson(steps.check_flag.outputs.result)
+      run: |
+        DIR="${{ env.PATCHES_DIR }}"
+        mkdir -p "$DIR"
+        git format-patch -o "$DIR" ${{ steps.check_base.outputs.head_ref_name }}..HEAD
+        BASE_DIR="$PWD"
+        pushd "$DIR"
+          find . ! -type d -printf '%P\0' | tar -cJvf "$BASE_DIR/${{ env.PATCHES_ARTIFACT }}" --null -T -
+        popd
+
+    - name: Upload Patches
+      id: upload_patches
+      if: fromJson(steps.check_flag.outputs.result)
+      uses: actions/upload-artifact@v7
+      with:
+        path: |
+          ${{ env.PATCHES_ARTIFACT }}
+        if-no-files-found: error
+        retention-days: 1
+        overwrite: true
+        include-hidden-files: true
+        archive: false
+
+  select:
+    uses: ./.github/workflows/select-ksu.yml
+    needs: 
+    - prepare
+    if: fromJson(needs.prepare.outputs.can_build)
+    with:
+      provider: ${{ github.ref_name }}
+
+  build:
+    uses: ./.github/workflows/build-kernel.yml
+    needs: 
+    - prepare
+    - select
+    secrets: inherit
+    with:
+      verbose_logs: true
+      kernel_localversion: ${{ github.ref_name }}-test
+      ksu: true
+      ksu_setup_script: ${{ needs.select.outputs.setup_script }}
+      ksu_setup_branch: ${{ needs.select.outputs.setup_branch }}
+      ksu_manual_hooks: ${{ needs.prepare.outputs.artifact_id }}
+      ksu_custom_env_or_config: ${{ needs.select.outputs.custom_env_or_config }}
+
+  release:
+    runs-on: ubuntu-22.04
+    needs:
+    - prepare
+    - build
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ env.RELEASE_TAG }}
+
+    - name: Download Patches
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ env.PATCHES_ARTIFACT }}
+
+    - name: Upload Patches
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release upload --clobber ${{ env.RELEASE_TAG }} ${{ env.PATCHES_ARTIFACT }}

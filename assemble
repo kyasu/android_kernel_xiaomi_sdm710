@@ -1,0 +1,408 @@
+#!/bin/bash
+
+# build-essential libssl-dev ccache
+
+set -euo pipefail
+
+echo "展开调用: "
+echo "$0 $*"
+
+PREBUILT_DIR=""
+CACHE_DIR=""
+WORK_DIR=$(realpath -m ".")
+JOBS=$(($(nproc) * 2 - 1))
+BEAR=0
+LLVM=0
+CROSS_COMPILE=""
+LOCALVERSION=""
+BUILD_DIR=$(realpath -m ".build")
+VERBOSE=0
+LOGS_DIR=$(realpath -m ".logs")
+DESTINATION_DIR=$(realpath -m ".target")
+SIGNING_KEY_FILE=""
+CLEAN=0
+declare -A CONFIGS=()
+
+if (( $# < 2 )); then
+  echo "用法: $0 <arch> <device> [选项 [值]...]... [自定义环境变量/配置: KEY=VALUE]..."
+  echo "  可用选项:"
+  echo "    -p, --prebuilt <prebuilt_dir>"
+  echo "        指定预构建库/包目录，默认: '$PREBUILT_DIR'"
+  echo ""
+  echo "    -c, --cache <cache_dir>"
+  echo "        指定缓存的存放根目录，基于 --version 来自动创建缓存子目录"
+  echo "        为空时禁用缓存，默认: '$CACHE_DIR'"
+  echo ""
+  echo "    -w, --work <work_dir>"
+  echo "        指定工作目录，默认: '$WORK_DIR'"
+  echo ""
+  echo "    -j, --jobs <size>"
+  echo "        指定工作线程数量，默认: $JOBS"
+  echo ""
+  echo "        --bear"
+  echo "        使用 bear -- make 生成 JSON 编译数据库"
+  echo "        用于 VSCode + Clangd 开发补全等功能，默认: $((( $BEAR != 0 )) && echo '启用' || echo '禁用')"
+  echo ""
+  echo "        --llvm"
+  echo "        使用 Clang/Clang++ 作为主要编译器，默认: $((( $LLVM != 0 )) && echo '启用' || echo '禁用')"
+  echo ""
+  echo "        --cross <cross_compile>"
+  echo "        指定 CROSS_COMPILE 的值，默认: '$CROSS_COMPILE'"
+  echo ""
+  echo "        --version <localversion>"
+  echo "        指定 LOCALVERSION 的值，默认: '$LOCALVERSION'"
+  echo ""
+  echo "        --build <build_dir>"
+  echo "        指定构建目录，默认: '$BUILD_DIR'"
+  echo ""
+  echo "    -v, --verbose"
+  echo "        使用构建参数 'V=1' 来启用更详细的日志，默认: $((( $VERBOSE != 0 )) && echo '启用' || echo '禁用')"
+  echo ""
+  echo "        --logs <logs_dir>"
+  echo "        指定日志文件的存放目录，默认: '$LOGS_DIR'"
+  echo ""
+  echo "    -d, --destination <dest_dir>"
+  echo "        指定目标工件的存放目录，默认: '$DESTINATION_DIR'"
+  echo ""
+  echo "    -s, --signing <key_file>"
+  echo "        指定签名密钥文件，默认: '$SIGNING_KEY_FILE'"
+  echo ""
+  echo "        --clean"
+  echo "        在构建之前进行清理，默认: $((( $CLEAN != 0 )) && echo '启用' || echo '禁用')"
+  echo ""
+  echo "示例: $0 arm64 grus --cross aarch64-linux-gnu --version wabby-wabbo -s .signing_key.pem CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+  exit 1
+fi
+
+if [[ ! -n "$1" || "$1" =~ ^- ]]; then
+  echo "无效参数: <arch> 的值不能为 '$1'" >&2
+  exit 1
+fi
+ARCH="$1"
+shift
+if [[ ! -n "$1" || "$1" =~ ^- ]]; then
+  echo "无效参数: <device> 的值不能为 '$1'" >&2
+  exit 1
+fi
+DEVICE="$1"
+shift
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -v|--verbose)
+      VERBOSE=1
+      shift
+      ;;
+    --logs)
+      if [ -n "$2" ]; then
+        LOGS_DIR=$(realpath -m "$2")
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的目录路径" >&2
+        exit 1
+      fi
+      ;;
+    -p|--prebuilt)
+      if [ -n "$2" ]; then
+        PREBUILT_DIR=$(realpath -m "$2")
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的目录路径" >&2
+        exit 1
+      fi
+      ;;
+    -c|--cache)
+      if [ -n "$2" ]; then
+        CACHE_DIR=$(realpath -m "$2")
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的目录路径" >&2
+        exit 1
+      fi
+      ;;
+    -w|--work)
+      if [ -n "$2" ]; then
+        WORK_DIR=$(realpath -m "$2")
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的目录路径" >&2
+        exit 1
+      fi
+      ;;
+    -j|--jobs)
+      if [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+        JOBS=$2
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的正整数" >&2
+        exit 1
+      fi
+      ;;
+    --bear)
+      BEAR=1
+      shift
+      ;;
+    --llvm)
+      LLVM=1
+      shift
+      ;;
+    --cross)
+      if [ -n "$2" ]; then
+        CROSS_COMPILE="$2"
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的交叉编译器平台" >&2
+        exit 1
+      fi
+      ;;
+    --version)
+      if [ -n "$2" ]; then
+        LOCALVERSION="$2"
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的版本名称" >&2
+        exit 1
+      fi
+      ;;
+    --build)
+      if [ -n "$2" ]; then
+        BUILD_DIR=$(realpath -m "$2")
+        if [[ "$BUILD_DIR" == "$WORK_DIR" ]]; then
+          echo "无效选项: $1: 构建目录不能与工作目录相同" >&2
+          exit 1
+        fi
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的目录路径" >&2
+        exit 1
+      fi
+      ;;
+    -d|--destination)
+      if [ -n "$2" ]; then
+        DESTINATION_DIR=$(realpath -m "$2")
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的目录路径" >&2
+        exit 1
+      fi
+      ;;
+    -s|--signing)
+      if [ -n "$2" ]; then
+        SIGNING_KEY_FILE=$(realpath -m "$2")
+        shift 2
+      else
+        echo "无效选项: $1: 必须提供一个有效的文件路径" >&2
+        exit 1
+      fi
+      ;;
+    --clean)
+      CLEAN=1
+      shift
+      ;;
+    -*)
+      echo "无效选项: $1" >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+echo "初始化..."
+rm -rf $LOGS_DIR
+mkdir -p $LOGS_DIR
+
+__INFO_FIFO=$LOGS_DIR/.info.fifo
+__ERROR_FIFO=$LOGS_DIR/.error.fifo
+__INFO_FILE=$LOGS_DIR/assemble-info.log
+__ERROR_FILE=$LOGS_DIR/assemble-error.log
+mkfifo $__INFO_FIFO
+mkfifo $__ERROR_FIFO
+cat $__INFO_FIFO | tee -a $__INFO_FILE &
+exec 1>$__INFO_FIFO
+cat $__ERROR_FIFO | tee -a $__ERROR_FILE &
+exec 2>$__ERROR_FIFO 
+
+{
+  echo "工作线程: $JOBS"
+  pushd $WORK_DIR
+
+  export ARCH="$ARCH"
+
+  if [[ -n "$PREBUILT_DIR" ]]; then
+    TOOLCHAIN_DIR="$PREBUILT_DIR/toolchain"
+  fi
+
+  if (( $LLVM != 0 )); then
+    export LLVM=1
+    export LLVM_IAS=1
+
+    __DIR="$TOOLCHAIN_DIR/clang/bin"
+    if [[ -n "$TOOLCHAIN_DIR" && -d "$__DIR" ]]; then
+      export PATH="$__DIR:$PATH"
+    fi
+  else
+    if [[ -n "$TOOLCHAIN_DIR" ]]; then
+      for dir in $TOOLCHAIN_DIR/gcc/*/; do
+        __DIR="${dir%/}/bin"
+        if [ -d "$__DIR" ]; then
+          export PATH="$__DIR:$PATH"
+        fi
+      done
+    fi
+  fi
+
+  if [[ -n $CROSS_COMPILE ]]; then
+    export CROSS_COMPILE="${CROSS_COMPILE}-"
+  fi
+
+  CACHE_VERSION="$LOCALVERSION"
+  if [[ -n "$LOCALVERSION" ]]; then
+    export LOCALVERSION="-$LOCALVERSION"
+  fi
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      *=*)
+        if [[ "$1" == CONFIG_* ]]; then
+          __KEY="${1%%=*}"
+          __KEY="${__KEY#CONFIG_}"
+          if [[ ! -n "$__KEY" ]]; then
+            echo "无效的配置: $1: 格式应为 KEY=VALUE ，且 KEY 不能为 '$__KEY'" >&2
+            exit 1
+          fi
+          __VALUE="${1#*=}"
+          CONFIGS[$__KEY]="$__VALUE"
+        else
+          export "$1"
+        fi
+        shift
+        ;;
+      *)
+        echo "无效的环境变量: $1: 格式应为 KEY=VALUE" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  echo "打印环境变量..."
+  if (( $VERBOSE != 0 )); then
+    printenv
+  fi
+
+  V=$((( $VERBOSE != 0 )) && echo 'V=1' || echo 'V=s')
+  O="O=$BUILD_DIR"
+
+  CCACHE=""
+  if [[ -n "$CACHE_DIR" ]]; then
+    echo "配置缓存..."
+    if command -v ccache >/dev/null 2>&1; then
+      CCACHE="ccache"
+      export CCACHE="$CCACHE"
+      if [[ -n "$CACHE_VERSION" ]]; then
+        export CCACHE_DIR="$CACHE_DIR/$CACHE_VERSION"
+      else
+        export CCACHE_DIR="$CACHE_DIR"
+      fi
+      ccache --show-config
+      if (( $CLEAN != 0 )); then
+        echo "清理缓存..."
+        ccache -zC
+      fi
+    else
+      echo "CCache 未安装，跳过缓存..."
+    fi
+  fi
+
+  BEAR_BRIDGE=""
+  if (( $BEAR != 0 )); then
+    if command -v bear >/dev/null 2>&1; then
+      echo "启用生成 JSON 编译数据库..."
+      BEAR_BRIDGE="bear --"
+    else
+      echo "Bear 未安装，跳过生成 JSON 编译数据库..."
+    fi
+  fi
+
+  if (( $CLEAN != 0 )); then
+    echo "清理构建..."
+    make $V $O mrproper
+    make $V mrproper
+  fi
+
+  echo "生成配置..."
+  DEFAULT_CONFIG="${DEVICE}_defconfig"
+  make $V $O $DEFAULT_CONFIG
+
+  echo "自定义配置..."
+  OLECONFIG=0
+  for __KEY in "${!CONFIGS[@]}"; do
+    echo "配置 '$__KEY' ..."
+    __VALUE="${CONFIGS[$__KEY]}"
+    case "$__VALUE" in
+      y)
+        echo "启用内建 '$__KEY' ..."
+        scripts/config --file ${BUILD_DIR}/.config --enable $__KEY
+        ;;
+      n)
+        echo "禁用内建 '$__KEY' ..."
+        scripts/config --file ${BUILD_DIR}/.config --disable $__KEY
+        ;;
+      m)
+        echo "启用模块 '$__KEY' ..."
+        scripts/config --file ${BUILD_DIR}/.config --module $__KEY
+        ;;
+      \"*\")
+        echo "设置文本 '$__KEY=$__VALUE' ..."
+        scripts/config --file ${BUILD_DIR}/.config --set-str $__KEY $__VALUE
+        ;;
+      *)
+        echo "设置值 '$__KEY=$__VALUE' ..."
+        scripts/config --file ${BUILD_DIR}/.config --set-val $__KEY $__VALUE
+    esac
+    OLECONFIG=1
+  done
+
+  if [[ -n "$SIGNING_KEY_FILE" ]]; then
+    echo "使用外部签名密钥..."
+    scripts/config --file ${BUILD_DIR}/.config --set-str MODULE_SIG_KEY $SIGNING_KEY_FILE
+    OLECONFIG=1
+  fi
+
+  echo "应用自定义配置..."
+  if (( $OLECONFIG != 0 )); then
+    make $V $O oldconfig
+  fi
+
+  echo "构建内核..."
+  $BEAR_BRIDGE make $V $O -j$JOBS
+
+  echo "复制内核..."
+  KERNEL_DESTINATION_DIR=$DESTINATION_DIR/kernel
+  mkdir -p $KERNEL_DESTINATION_DIR
+  # cp $BUILD_DIR/vmlinux $KERNEL_DESTINATION_DIR
+  pushd $BUILD_DIR/arch/$ARCH/boot
+
+  find . -type f -name "Image*" -exec cp -v {} $KERNEL_DESTINATION_DIR \;
+
+  popd
+
+  echo "签名模块..."
+  make $V $O modules_install INSTALL_MOD_PATH=modules
+
+  echo "复制模块..."
+  MODULES_DESTINATION_DIR=$DESTINATION_DIR/modules
+  mkdir -p $MODULES_DESTINATION_DIR
+  pushd $BUILD_DIR/modules
+
+  find . -type f -name "*.ko" -exec cp -v {} $MODULES_DESTINATION_DIR \;
+
+  popd
+
+  popd
+
+  if [[ -n "$CCACHE" ]]; then
+    ccache -s -v
+  fi
+}

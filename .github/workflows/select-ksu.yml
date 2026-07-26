@@ -1,0 +1,60 @@
+name: Select KernelSU
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        type: string
+        required: true
+    outputs:
+      setup_script:
+        value: ${{ jobs.select.outputs.setup_script }}
+      setup_branch:
+        value: ${{ jobs.select.outputs.setup_branch }}
+      manual_hooks:
+        value: ${{ jobs.select.outputs.manual_hooks }}
+      custom_env_or_config:
+        value: ${{ jobs.select.outputs.custom_env_or_config }}
+
+jobs:
+  select:
+    runs-on: ubuntu-22.04
+    outputs:
+      setup_script: ${{ steps.export_ksu_configs.outputs.setup_script }}
+      setup_branch: ${{ steps.export_ksu_configs.outputs.setup_branch }}
+      manual_hooks: ${{ steps.export_ksu_configs.outputs.manual_hooks }}
+      custom_env_or_config: ${{ steps.export_ksu_configs.outputs.custom_env_or_config }}
+    steps:
+    - name: Export KernelSU Configurations
+      id: export_ksu_configs
+      run: |
+        PROVIDER="${{ inputs.provider }}"
+        SETUP_SCRIPT=""
+        SETUP_BRANCH=""
+        MANUAL_HOOKS="https://github.com/ketikai/android_kernel_xiaomi_sdm710/releases/download/prebuilt/$PROVIDER-manual-hooks.tar.xz"
+        CUSTOM_ENV_OR_CONFIG=""
+        case "$PROVIDER" in
+          xxksu)
+            SETUP_SCRIPT="https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh"
+            SETUP_BRANCH="master"
+            ;;
+          resuki)
+            SETUP_SCRIPT="https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh"
+            SETUP_BRANCH="main"
+            CUSTOM_ENV_OR_CONFIG="CONFIG_KALLSYMS_ALL=y CONFIG_KSU_MANUAL_HOOK=y"
+            ;;
+          susfs)
+            SETUP_SCRIPT="https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh"
+            SETUP_BRANCH="main"
+            CUSTOM_ENV_OR_CONFIG="CONFIG_KALLSYMS_ALL=y CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SUS_MAP=y"
+            ;;
+          *)
+            echo "不支持的 KernelSU 服务提供方: '$PROVIDER'" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "setup_script=$SETUP_SCRIPT" >> $GITHUB_OUTPUT
+        echo "setup_branch=$SETUP_BRANCH" >> $GITHUB_OUTPUT
+        echo "manual_hooks=$MANUAL_HOOKS" >> $GITHUB_OUTPUT
+        echo "custom_env_or_config=$CUSTOM_ENV_OR_CONFIG" >> $GITHUB_OUTPUT

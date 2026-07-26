@@ -1,0 +1,378 @@
+name: Build Kernel
+
+on:
+  workflow_call:
+    inputs: &workflow_inputs
+      base_on_default_branch:
+        description: Base On Default Branch
+        type: boolean
+        required: false
+        default: true
+      verbose_logs:
+        description: More Detailed Logs
+        type: boolean
+        required: false
+        default: false
+      kernel_arch:
+        description: Kernel - Arch
+        type: string
+        required: false
+        default: arm64
+      kernel_device:
+        description: Kernel - Device
+        type: string
+        required: false
+        default: grus
+      kernel_localversion:
+        description: Kernel - Local Version
+        type: string
+        required: false
+        default: wabby-wabbo
+      kernel_cross_compile:
+        description: Kernel - Cross Compile
+        type: string
+        required: false
+        default: aarch64-linux-gnu
+      kernel_custom_env_or_config:
+        description: Kernel - Custom ENV / CONFIG
+        type: string
+        required: false
+        default: CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+      llvm:
+        description: Use LLVM / Clang
+        type: boolean
+        required: false
+        default: true
+      prebuilt_clang_toolchain:
+        description: Prebuilt - Clang Toolchain
+        type: string
+        required: false
+        default: https://github.com/ketikai/android_kernel_xiaomi_sdm710/releases/download/prebuilt/clang-r596125.tar.xz
+      prebuilt_gcc_toolchain:
+        description: Prebuilt - GCC Toolchain
+        type: string
+        required: false
+        default: https://github.com/ketikai/android_kernel_xiaomi_sdm710/releases/download/prebuilt/linaro-gcc.tar.xz
+      ksu:
+        description: With KernelSU
+        type: boolean
+        required: false
+        default: false
+      ksu_setup_script:
+        description: KernelSU - Setup Script
+        type: string
+        required: false
+        default: https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh
+      ksu_setup_branch:
+        description: KernelSU - Setup Branch
+        type: string
+        required: false
+        default: master
+      ksu_manual_hooks:
+        description: KernelSU - Manual Hooks
+        type: string
+        required: false
+        default: https://github.com/ketikai/android_kernel_xiaomi_sdm710/releases/download/prebuilt/xxksu-manual-hooks.tar.xz
+      ksu_custom_env_or_config:
+        description: KernelSU - Custom ENV / CONFIG
+        type: string
+        required: false
+        default: CONFIG_KALLSYMS_ALL=y
+      anykernel:
+        description: Assemble AnyKernel
+        type: boolean
+        required: false
+        default: true
+      prebuilt_anykernel_package:
+        description: Prebuilt - AnyKernel Package
+        type: string
+        required: false
+        default: https://github.com/ketikai/android_kernel_xiaomi_sdm710/releases/download/prebuilt/anykernel.tar.xz
+  workflow_dispatch:
+    inputs: *workflow_inputs
+    
+env:
+  PREBUILT_DIR: .prebuilt
+  DESTINATION_DIR: .target
+  BUILD_ARTIFACT: kernel
+  ASSEMBLE_ARTIFACT: anykernel
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Setup SWAP
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 16
+
+    - name: Prepare Base
+      id: prepare_base
+      run: |
+        if ${{ inputs.base_on_default_branch }}; then
+          BASE="${{ github.event.repository.default_branch }}"
+        else
+          BASE="${{ github.ref_name }}"
+        fi
+        echo "base=$BASE" >> $GITHUB_OUTPUT
+
+    - name: Setup CCache
+      id: setup_ccache
+      run: |
+        sudo apt-get install -y ccache
+        CACHE_DIR=$(realpath -m ".cache")
+        echo "cache_dir=$CACHE_DIR" >> $GITHUB_OUTPUT
+        CACHE_KEY="${{ runner.os }}-${{ runner.arch }}-ccache-${{ github.ref_name }}-${{ steps.prepare_base.outputs.base }}"
+        if [[ -n "${{ inputs.kernel_localversion }}" ]]; then
+          CACHE_KEY="${CACHE_KEY}-${{ inputs.kernel_localversion }}"
+        fi
+        echo "cache_key=$CACHE_KEY" >> $GITHUB_OUTPUT
+
+    - name: Download CCache Contents From Cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.setup_ccache.outputs.cache_dir }}
+        key: ${{ steps.setup_ccache.outputs.cache_key }}
+
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ steps.prepare_base.outputs.base }}
+
+    - name: Prepare Prebuilt
+      id: prepare_prebuilt
+      env:
+        TOOLCHAIN_DIR: ${{ env.PREBUILT_DIR }}/toolchain
+      run: |
+        if ${{ inputs.llvm }}; then
+          DIR="${{ env.TOOLCHAIN_DIR }}/clang"
+          mkdir -p $DIR
+          echo "clang_toolchain_dir=$DIR" >> $GITHUB_OUTPUT
+          CACHE_KEY="${{ env.TOOLCHAIN_DIR }}/.CLANG_TOOLCHAIN_CACHE_KEY"
+          echo "${{ inputs.prebuilt_clang_toolchain }}" > $CACHE_KEY
+          echo "clang_toolchain_cache_key=$CACHE_KEY" >> $GITHUB_OUTPUT
+        else
+          DIR="${{ env.TOOLCHAIN_DIR }}/gcc"
+          mkdir -p $DIR
+          echo "gcc_toolchain_dir=$DIR" >> $GITHUB_OUTPUT
+          CACHE_KEY="${{ env.TOOLCHAIN_DIR }}/.GCC_TOOLCHAIN_CACHE_KEY"
+          echo "${{ inputs.prebuilt_gcc_toolchain }}" > $CACHE_KEY
+          echo "gcc_toolchain_cache_key=$CACHE_KEY" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download Prebuilt Clang Toolchain From Cache
+      uses: actions/cache@v6
+      id: prebuilt_clang_toolchain_cache
+      if: fromJson(inputs.llvm)
+      with:
+        path: ${{ steps.prepare_prebuilt.outputs.clang_toolchain_dir }}
+        key: ${{ runner.os }}-${{ runner.arch }}-prebuilt-clang-toolchain-${{ hashFiles(steps.prepare_prebuilt.outputs.clang_toolchain_cache_key) }}
+
+    - name: Download Prebuilt Clang Toolchain
+      if: fromJson(inputs.llvm) && steps.prebuilt_clang_toolchain_cache.outputs.cache-hit != 'true'
+      run: |
+        URL="${{ inputs.prebuilt_clang_toolchain }}"
+        DIR="${{ steps.prepare_prebuilt.outputs.clang_toolchain_dir }}"
+        case "$URL" in
+          *.tar.xz)
+            wget -nv -O - "$URL" | tar -xJvf - -C "$DIR"
+            ;;
+          *.tar.gz)
+            wget -nv -O - "$URL" | tar -xzvf - -C "$DIR"
+            ;;
+          *)
+            echo "不支持的文件格式: '$URL'" >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Download Prebuilt GCC Toolchain From Cache
+      uses: actions/cache@v6
+      id: prebuilt_gcc_toolchain_cache
+      if: fromJson(inputs.llvm) != true
+      with:
+        path: ${{ steps.prepare_prebuilt.outputs.gcc_toolchain_dir }}
+        key: ${{ runner.os }}-${{ runner.arch }}-prebuilt-gcc-toolchain-${{ hashFiles(steps.prepare_prebuilt.outputs.gcc_toolchain_cache_key) }}
+
+    - name: Download Prebuilt GCC Toolchain
+      if: fromJson(inputs.llvm) != true && steps.prebuilt_gcc_toolchain_cache.outputs.cache-hit != 'true'
+      run: |
+        URL="${{ inputs.prebuilt_gcc_toolchain }}"
+        DIR="${{ steps.prepare_prebuilt.outputs.gcc_toolchain_dir }}"
+        case "$URL" in
+          *.tar.xz)
+            wget -nv -O - "$URL" | tar -xJvf - -C "$DIR"
+            ;;
+          *.tar.gz)
+            wget -nv -O - "$URL" | tar -xzvf - -C "$DIR"
+            ;;
+          *)
+            echo "不支持的文件格式: '$URL'" >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Prepare KernelSU
+      id: prepare_ksu
+      if: fromJson(inputs.ksu)
+      run: |
+        DIR="${{ env.PREBUILT_DIR }}/manual-hooks"
+        mkdir -p "$DIR"
+        echo "manual_hooks_dir=$DIR" >> $GITHUB_OUTPUT
+        
+        ART=false
+        URL="${{ inputs.ksu_manual_hooks }}"
+        if [[ "$URL" =~ ^[0-9]+$ ]]; then
+          URL=""
+          ART=true
+        fi
+        echo "manual_hooks_url=$URL" >> $GITHUB_OUTPUT
+        echo "manual_hooks_artifact=$ART" >> $GITHUB_OUTPUT
+
+    - name: Download KernelSU Patches Artifacts
+      if: fromJson(steps.prepare_ksu.outputs.manual_hooks_artifact)
+      uses: actions/download-artifact@v8
+      with:
+        artifact-ids: ${{ inputs.ksu_manual_hooks }}
+        path: ${{ steps.prepare_ksu.outputs.manual_hooks_dir }}
+
+    - name: Download KernelSU Patches
+      if: fromJson(steps.prepare_ksu.outputs.manual_hooks_artifact) != true
+      run: |
+        DIR="${{ steps.prepare_ksu.outputs.manual_hooks_dir }}"
+        URL="${{ steps.prepare_ksu.outputs.manual_hooks_url }}"
+        pushd "$DIR"
+          case "$URL" in
+            *.tar.xz)
+              wget -nv -O - "$URL" | tar -xJvf - -C .
+              ;;
+            *.tar.gz)
+              wget -nv -O - "$URL" | tar -xzvf - -C .
+              ;;
+            *.patch)
+              wget -nv - "$URL"
+              ;;
+            *)
+              echo "不支持的文件格式: '$URL'" >&2
+              exit 1
+              ;;
+          esac
+        popd
+
+    - name: Extract KernelSU Patches Artifacts
+      if: fromJson(steps.prepare_ksu.outputs.manual_hooks_artifact)
+      run: |
+        DIR="${{ steps.prepare_ksu.outputs.manual_hooks_dir }}"
+        pushd "$DIR"
+          __FILES=()
+          while IFS= read -r -d '' __FILE; do
+            __FILE=$(realpath -m "$__FILE")
+            __FILES+=( "$__FILE" )
+          done < <(find . -maxdepth 1 -type f -print0)
+          for __FILE in "${__FILES[@]}"; do
+            case "$__FILE" in
+              *.tar.xz)
+                tar -xJvf "$__FILE" -C .
+                rm -f "$__FILE"
+                ;;
+              *.tar.gz)
+                tar -xzvf "$__FILE" -C .
+                rm -f "$__FILE"
+                ;;
+              *.patch)
+                ;;
+              *)
+                echo "不支持的文件格式: '$__FILE'" >&2
+                exit 1
+                ;;
+            esac
+          done
+        popd
+
+    - name: Setup KernelSU Integration
+      if: fromJson(inputs.ksu)
+      run: |
+        curl -LSs ${{ inputs.ksu_setup_script }} | bash -s ${{ inputs.ksu_setup_branch }}
+
+        git apply --reject -p1 "${{ steps.prepare_ksu.outputs.manual_hooks_dir }}"/*.patch || true
+        __FILES=()
+        while IFS= read -r -d '' __FILE; do
+          __FILE=$(realpath -m "$__FILE")
+          __FILES+=( "$__FILE" )
+        done < <(find . -type f -name "*.rej" -print0)
+        for __FILE in "${__FILES[@]}"; do
+          REJECT=1
+          echo "$__FILE"
+          cat "$__FILE"
+          echo "---"
+        done
+        if (( ${#__FILES[@]} != 0 )); then
+          echo "不兼容的补丁内容: 请根据日志内容对补丁进行修复" >&2
+          exit 1
+        fi
+
+    - name: Execute assemble
+      run: |
+        VERBOSE=$(${{ inputs.verbose_logs }} && echo "-v" || echo "")
+        LLVM=$(${{ inputs.llvm }} && echo "--llvm" || echo "")
+        CROSS_COMPILE=$([[ -n "${{ inputs.kernel_cross_compile }}" ]] && echo "--cross ${{ inputs.kernel_cross_compile }}" || echo "")
+        VERSION=$([[ -n "${{ inputs.kernel_localversion }}" ]] && echo "--version ${{ inputs.kernel_localversion }}" || echo "")
+        SIGNING=""
+        if [[ -n "${{ secrets.SIGNING_KEY }}" ]]; then
+          echo "${{ secrets.SIGNING_KEY }}" > ".signing_key.pem"
+          SIGNING="-s .signing_key.pem"
+        fi
+        CUSTOM_ENV_OR_CONFIG=$([[ -n "${{ inputs.kernel_custom_env_or_config }}" ]] && echo "${{ inputs.kernel_custom_env_or_config }}" || echo "")
+        KSU_CUSTOM_ENV_OR_CONFIG=$([[ -n "${{ inputs.ksu_custom_env_or_config }}" ]] && echo "${{ inputs.ksu_custom_env_or_config }}" || echo "")
+        ./assemble ${{ inputs.kernel_arch }} ${{ inputs.kernel_device }} $VERBOSE -p ${{ env.PREBUILT_DIR }} -c ${{ steps.setup_ccache.outputs.cache_dir }} $LLVM $CROSS_COMPILE $VERSION $SIGNING -d ${{ env.DESTINATION_DIR }} $CUSTOM_ENV_OR_CONFIG $KSU_CUSTOM_ENV_OR_CONFIG
+
+    - name: Upload Logs
+      uses: actions/upload-artifact@v7
+      with:
+        name: logs
+        path: |
+          .logs/*.log
+        if-no-files-found: error
+        overwrite: true
+        include-hidden-files: true
+
+    - name: Upload Kernel And Modules
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ env.BUILD_ARTIFACT }}
+        path: |
+          ${{ env.DESTINATION_DIR }}/*
+        if-no-files-found: error
+        overwrite: true
+        include-hidden-files: true
+  
+  assemble:
+    runs-on: ubuntu-22.04
+    needs: 
+    - build
+    if: fromJson(inputs.anykernel)
+    steps:
+    - name: Download Prebuilt AnyKernel Package
+      run: |
+        mkdir -p ${{ env.DESTINATION_DIR }}
+        wget -O - ${{ inputs.prebuilt_anykernel_package }} | tar -xJvf - -C ${{ env.DESTINATION_DIR }}
+
+    - name: Download Kernel
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ env.BUILD_ARTIFACT }}
+        path: ${{ env.BUILD_ARTIFACT }}
+
+    - name: Setup Kernel Image
+      run: |
+        cp "${{ env.BUILD_ARTIFACT }}/kernel/Image" "${{ env.DESTINATION_DIR }}"
+
+    - name: Upload AnyKernel Package
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ env.ASSEMBLE_ARTIFACT }}
+        path: |
+          ${{ env.DESTINATION_DIR }}/*
+        if-no-files-found: error
+        overwrite: true
+        include-hidden-files: true

@@ -302,14 +302,14 @@ CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
 	  else echo sh; fi ; fi)
 
 ifneq ($(LLVM),)
-HOSTCC       = clang
-HOSTCXX      = clang++
+HOSTCC       = $(CCACHE) clang
+HOSTCXX      = $(CCACHE) clang++
 else
-HOSTCC       = gcc
-HOSTCXX      = g++
+HOSTCC       = $(CCACHE) gcc
+HOSTCXX      = $(CCACHE) g++
 endif
 
-HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89
+HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu99
 HOSTCXXFLAGS = -O2
 
 ifeq ($(shell $(HOSTCC) -v 2>&1 | grep -c "clang version"), 1)
@@ -351,7 +351,7 @@ include scripts/Kbuild.include
 LDGOLD		= $(CROSS_COMPILE)ld.gold
 CPP		= $(CC) -E
 ifneq ($(LLVM),)
-CC		= clang
+CC		= $(CCACHE) clang
 LD		= ld.lld
 AR		= llvm-ar
 NM		= llvm-nm
@@ -363,7 +363,7 @@ STRIP		= llvm-strip
 else
 AS		= $(CROSS_COMPILE)as
 LD		= $(CROSS_COMPILE)ld
-CC		= $(CROSS_COMPILE)gcc
+CC		= $(CCACHE) $(CROSS_COMPILE)gcc
 AR		= $(CROSS_COMPILE)ar
 NM		= $(CROSS_COMPILE)nm
 STRIP		= $(CROSS_COMPILE)strip
@@ -412,8 +412,8 @@ KBUILD_AFLAGS   := -D__ASSEMBLY__
 KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common -fshort-wchar \
 		   -Werror-implicit-function-declaration \
-		   -Wno-format-security \
-		   -std=gnu89
+		   -Wno-format-security -Wno-error \
+		   -std=gnu99
 KBUILD_CPPFLAGS := -D__KERNEL__
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
@@ -923,7 +923,9 @@ KBUILD_CFLAGS	+= $(call cc-option,-fno-merge-all-constants)
 
 # for gcc -fno-merge-all-constants disables everything, but it is fine
 # to have actual conforming behavior enabled.
+ifneq ($(cc-name),clang)
 KBUILD_CFLAGS	+= $(call cc-option,-fmerge-constants)
+endif
 
 # Make sure -fstack-check isn't enabled (like gentoo apparently did)
 KBUILD_CFLAGS  += $(call cc-option,-fno-stack-check,)

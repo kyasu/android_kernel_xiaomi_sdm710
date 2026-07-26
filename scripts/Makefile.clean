@@ -60,10 +60,13 @@ __clean-dirs    := $(wildcard                                               \
 
 # ==========================================================================
 
+# To make this rule robust against "Argument list too long" error,
+# remove $(obj)/ prefix, and restore it by a shell command.
+# See https://android.googlesource.com/kernel/common/+/refs/tags/android16-6.12-2025-06_r38/scripts/Makefile.clean
 quiet_cmd_clean    = CLEAN   $(obj)
-      cmd_clean    = rm -f $(__clean-files)
+      cmd_clean    = printf '$(obj)/%s ' $(patsubst $(obj)/%,%,$(__clean-files)) | xargs rm -f
 quiet_cmd_cleandir = CLEAN   $(__clean-dirs)
-      cmd_cleandir = rm -rf $(__clean-dirs)
+      cmd_cleandir = printf '$(obj)/%s ' $(patsubst $(obj)/%,%,$(__clean-dirs)) | xargs rm -rf
 
 
 __clean: $(subdir-ymn)
